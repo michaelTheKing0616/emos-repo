@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     permissions:
-      id-token: write # Required for OIDC authentication
+      # id-token: write # Required for OIDC authentication with federated credentials
       contents: read # Required for actions/checkout
 
     steps:
@@ -74,6 +74,8 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          # Uncomment the following line and remove 'id-token: write' above if using service principal fallback:
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
 
       - name: 'Deploy to Azure Functions'
         uses: Azure/functions-action@v1
