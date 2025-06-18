@@ -11,14 +11,14 @@ on:
   workflow_dispatch:
 
 env:
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.' # set this to the path to your web app project, defaults to the repository root
-  PYTHON_VERSION: '3.10' # set this to the python version to use (supports 3.6, 3.7, 3.8)
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.' # Deploy from repository root
+  PYTHON_VERSION: '3.10' # Matches function environment
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read #This is required for actions/checkout
+      contents: read # Required for actions/checkout
 
     steps:
       - name: Checkout repository
@@ -29,18 +29,20 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Create and start virtual environment
+      - name: Install dependencies to deployment directory
         run: |
-          python -m venv venv
-          source venv/bin/activate
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      # Optional: Add step to run tests here
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt --target=".python_packages/lib/site-packages"
 
       - name: Zip artifact for deployment
-        run: zip release.zip ./* -r
+        run: |
+          zip release.zip \
+            FetchFirebaseData/* \
+            TriggerPrediction/* \
+            OptimizeEnergy/* \
+            requirements.txt \
+            host.json \
+            .python_packages/ -r
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
@@ -54,8 +56,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     permissions:
-      id-token: write #This is required for requesting the JWT
-      contents: read #This is required for actions/checkout
+      id-token: write # Required for requesting the JWT
+      contents: read # Required for actions/checkout
 
     steps:
       - name: Download artifact from build job
@@ -65,13 +67,13 @@ jobs:
 
       - name: Unzip artifact for deployment
         run: unzip release.zip     
-        
+
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_1253FA9747304C53A7DBA21832E58F4B }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_B5E80EA8458D4991AE0D73AD703977C8 }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_68963C06E00446A2A889127555F6EC70 }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: 'Deploy to Azure Functions'
         uses: Azure/functions-action@v1
@@ -80,4 +82,8 @@ jobs:
           app-name: 'emos-functions'
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          
+
+      - name: Verify deployment
+        run: |
+          echo "Deployment completed. Check Azure Portal for function status."
+          # Optional: Add API call to verify function endpoints if needed
