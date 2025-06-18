@@ -41,6 +41,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         logger.info(f"Calling endpoint: {endpoint_url}")
         response = requests.post(endpoint_url, json=input_data, headers=headers)
         response.raise_for_status()
+        logger.info(f"Request body: {json.dumps(req.get_json())}")
+        logger.info(f"Endpoint response status: {response.status_code}")
+        logger.info(f"Endpoint response text: {response.text}")
         predictions = response.json()
         logger.info(f"Received predictions: {json.dumps(predictions)}")
     except requests.exceptions.RequestException as e:
