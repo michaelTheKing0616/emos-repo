@@ -2,7 +2,7 @@ import azure.functions as func
 import requests
 import json
 import os
-import psycopg2-binary
+import psycopg2
 from datetime import datetime
 import logging
 
