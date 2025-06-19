@@ -3,7 +3,8 @@ import requests
 import json
 import os
 import psycopg2
-from datetime import datetime, timedelta
+import numpy as np  # Added for default data generation
+from datetime import datetime, timedelta  # Modified to include timedelta
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -11,119 +12,110 @@ logger = logging.getLogger(__name__)
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logger.info("Function TriggerPrediction started")
-
+    
     endpoint_url = os.getenv("ENDPOINT_URL")
     api_key = os.getenv("API_KEY")
     db_url = os.getenv("DATABASE_URL")
-
+    
     if not all([endpoint_url, api_key, db_url]):
         logger.error(f"Missing environment variables: ENDPOINT_URL={'present' if endpoint_url else 'missing'}, API_KEY={'present' if api_key else 'missing'}, DATABASE_URL={'present' if db_url else 'missing'}")
         return func.HttpResponse("Missing configuration", status_code=500)
 
+    input_data = {} # Initialize input_data
     try:
-        req_body = req.get_json()
-        logger.info(f"Received request body: {req_body}")
-
-        # The score.py expects a dictionary with a "data" key, where the value is a list of series objects.
-        # Or, if not wrapped, a single series object or a list of series objects directly.
-        # Let's ensure the input_data_for_scoring is always formatted as score.py expects:
-        # {"data": [ {series1}, {series2}, ... ]}
+        req_body = None
+        try:
+            req_body = req.get_json()
+        except ValueError:
+            logger.warning("Request body is not valid JSON. Attempting to use default data.")
         
-        input_data_for_scoring_list = []
-        
-        # If the request body provides data, use it. Otherwise, use default test data.
-        if req_body and ("data" in req_body or ("start" in req_body and "target" in req_body)):
-            # If "data" key exists, use its value (which should be a list of series objects)
-            if "data" in req_body:
-                input_data_for_scoring_list = req_body["data"]
-            else:
-                # If not wrapped, assume it's a single series object and wrap it in a list
-                input_data_for_scoring_list = [req_body]
-            logger.info("Using data from request body.")
+        if req_body and "data" in req_body:
+            input_data = req_body
+            logger.info("Using input data from request body.")
         else:
-            # Default test data generation for a single series
-            logger.info("No valid input in request, generating default test data.")
-            # Your model's context_length is 745. Provide at least this many data points.
-            num_timesteps = 745 
-            base_datetime = datetime.now() - timedelta(hours=num_timesteps) # Start X hours ago
-
-            target_values = [50.5 + (i % 20) + (i / 100) for i in range(num_timesteps)] # Simulate energy
-
-            dynamic_features_data = {
-                "temperature": [20.0 + (i % 5) for i in range(num_timesteps)],
-                "humidity": [60.0 + (i % 10) for i in range(num_timesteps)],
-                "occupancy": [1 if i % 24 < 12 else 0 for i in range(num_timesteps)], # Simulate day/night occupancy
-                "solar_irradiance": [100.0 + (i % 100) for i in range(num_timesteps)],
-                "wind_speed": [5.0 + (i % 5) for i in range(num_timesteps)],
-                "voltage": [230.0 + (i % 2) for i in range(num_timesteps)],
-                "current": [0.5 + (i % 1) for i in range(num_timesteps)]
-            }
-
-            datetime_list = [(base_datetime + timedelta(hours=i)).isoformat(timespec='seconds') + 'Z' for i in range(num_timesteps)]
-
-            single_series_data = {
-                "start": datetime_list[0], # The start of the series
-                "target": target_values,
-                "feat_dynamic_real": [dynamic_features_data[key] for key in sorted(dynamic_features_data.keys())], # Sort to ensure consistent order if needed
-                "feat_static_cat": [0], # Placeholder for building_id index
-                "feat_static_real": [1000.0] # Placeholder for building_area
-            }
-            input_data_for_scoring_list = [single_series_data]
+            logger.info("No 'data' key in request body or invalid JSON. Generating default test data.")
+            # Default test data generation for 745 timesteps, matching model's context_length
+            num_timesteps = 745
+            # Use current time minus history length for a realistic 'start'
+            base_datetime = datetime.now() - timedelta(hours=num_timesteps) 
+            target_values = [50.5 + (np.sin(i / 24 * np.pi) * 10) + (np.random.rand() * 5) for i in range(num_timesteps)]
             
-        # Wrap the list of series in a "data" key as expected by the score.py run function
-        payload_to_ml_endpoint = {"data": input_data_for_scoring_list}
-        logger.info(f"Payload to ML Endpoint (sample first series start and target length): start={payload_to_ml_endpoint['data'][0]['start']}, target_len={len(payload_to_ml_endpoint['data'][0]['target'])}")
-
-
-    except ValueError as e:
-        logger.error(f"Invalid request body format: {str(e)}")
-        return func.HttpResponse(f"Invalid input: {str(e)}", status_code=400)
+            dynamic_features_data = [
+                [20.0 + (np.sin(i / 24 * np.pi) * 5) for i in range(num_timesteps)],         # temperature
+                [60.0 + (np.cos(i / 48 * np.pi) * 10) for i in range(num_timesteps)],        # humidity
+                [1 if (i % 24 > 7 and i % 24 < 20) else 0 for i in range(num_timesteps)],    # occupancy
+                [max(0, 100 * np.sin(i / 24 * np.pi) - 50) for i in range(num_timesteps)],   # solar_irradiance
+                [5.0 + (np.random.rand() * 3) for i in range(num_timesteps)],                # wind_speed
+                [230.0 + (np.sin(i / 12 * np.pi) * 1) for i in range(num_timesteps)],        # voltage
+                [0.5 + (np.random.rand() * 0.5) for i in range(num_timesteps)]               # current
+            ]
+            
+            input_data = {
+                "data": [{
+                    "start": base_datetime.isoformat(timespec='seconds') + 'Z', # ISO format with UTC indicator
+                    "target": target_values,
+                    "feat_dynamic_real": dynamic_features_data,
+                    "feat_static_cat": [0], # Example static categorical feature
+                    "feat_static_real": [1000.0] # Example static real feature
+                }]
+            }
+            logger.info("Default test data generated successfully.")
+            
     except Exception as e:
-        logger.error(f"Error processing request body: {str(e)}")
-        return func.HttpResponse(f"Request processing error: {str(e)}", status_code=400)
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
+        logger.error(f"Error processing request body or generating default data: {str(e)}", exc_info=True)
+        return func.HttpResponse(f"Invalid request body or data generation error: {str(e)}", status_code=400)
 
     try:
-        logger.info(f"Calling endpoint: {endpoint_url}")
-        # Send the constructed payload_to_ml_endpoint directly as the JSON body
-        response = requests.post(endpoint_url, json=payload_to_ml_endpoint, headers=headers, timeout=300)
-        response.raise_for_status()
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+        
+        logger.info(f"Sending data to endpoint: {endpoint_url}")
+        # Ensure the payload is a JSON string before sending
+        response = requests.post(endpoint_url, headers=headers, data=json.dumps(input_data))
+        
+        # Log response details for debugging before attempting to parse
+        logger.info(f"Endpoint response status: {response.status_code}")
+        logger.info(f"Endpoint response text (first 500 chars): {response.text[:500]}...")
 
+        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+        
+        predictions = None
         try:
             predictions = response.json()
-            logger.info(f"Successfully received response from endpoint. Keys: {list(predictions.keys())}")
-        except json.JSONDecodeError:
-            logger.error(f"Invalid JSON response from endpoint: {response.text}")
-            return func.HttpResponse(f"Invalid response format from endpoint", status_code=500)
-
-    except requests.exceptions.Timeout:
-        logger.error("Endpoint call timed out")
-        return func.HttpResponse("Endpoint timeout", status_code=504)
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Endpoint call failed: {str(e)}")
-        return func.HttpResponse(f"Endpoint error: {str(e)}", status_code=500)
-
-    try:
-        # The score.py now returns {'predictions': [{...}, {...}]}
-        if "predictions" in predictions and isinstance(predictions["predictions"], list):
-            prediction_values = predictions["predictions"] # This will be a list of dictionaries, each with 'mean', 'start', etc.
-            # For storing in DB, we'll store the entire predictions list as JSONB
-            prediction_jsonb = json.dumps(prediction_values)
-            logger.info(f"Extracted {len(prediction_values)} series predictions from endpoint response.")
+            # Verify that the parsed object is what we expect (a dict or a list)
+            if not isinstance(predictions, (dict, list)):
+                raise ValueError(f"Endpoint response.json() did not return expected dict/list, but {type(predictions).__name__}")
+            
+            if isinstance(predictions, dict) and "predictions" in predictions:
+                logger.info(f"Successfully received response from endpoint. Keys: {list(predictions.keys())}. Number of predictions returned: {len(predictions.get('predictions', []))}")
+            else:
+                logger.info(f"Successfully received response from endpoint. Response is a list or unexpected dict structure.")
+                
+        except json.JSONDecodeError as json_e:
+            logger.error(f"Failed to decode JSON from endpoint response: {json_e}. Raw response: {response.text}")
+            return func.HttpResponse(f"Error decoding prediction response: {json_e}. Raw response: {response.text}", status_code=500)
+        except ValueError as val_e:
+            logger.error(f"Invalid format after JSON decode: {val_e}. Raw response: {response.text}")
+            return func.HttpResponse(f"Invalid prediction response format: {val_e}. Raw response: {response.text}", status_code=500)
+        
+        # Extract the list of prediction items
+        prediction_values = []
+        if isinstance(predictions, dict) and "predictions" in predictions:
+            prediction_values = predictions["predictions"]
+        elif isinstance(predictions, list): # Fallback if endpoint directly returns a list of predictions
+            prediction_values = predictions
         else:
-            logger.warning(f"Unexpected prediction format from endpoint. Expected 'predictions' key with a list. Raw response: {predictions}")
-            prediction_jsonb = json.dumps({"raw_response": predictions}) # Store raw response if format unexpected
-            prediction_values = [] # Empty list to avoid errors if not a list
+            logger.error(f"Unexpected prediction format from endpoint: {predictions}. Cannot extract values for database.")
+            return func.HttpResponse("Unexpected prediction response format from endpoint.", status_code=500)
 
-        timestamp = datetime.now()
-
+        # Database insertion logic
+        logger.info("Attempting to connect to database...")
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
-
+        
+        # Create table if it doesn't exist (ensure this DDL matches your requirements)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 id SERIAL PRIMARY KEY,
@@ -132,31 +124,54 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        
+        # Insert each prediction item as a separate record
+        if prediction_values:
+            for item in prediction_values:
+                # Extract timestamp from the prediction item itself if available, otherwise use a fallback
+                item_timestamp_str = item.get("start")
+                # Ensure the timestamp is in a format psycopg2 can handle (remove 'Z' and let fromisoformat handle UTC)
+                item_timestamp = datetime.fromisoformat(item_timestamp_str.replace('Z', '+00:00')) if item_timestamp_str else datetime.utcnow()
+                
+                cur.execute(
+                    "INSERT INTO predictions (timestamp, prediction) VALUES (%s, %s)", 
+                    (item_timestamp, json.dumps(item)) # Store the entire prediction item as JSONB
+                )
+            logger.info(f"Stored {len(prediction_values)} individual predictions in database.")
+        else:
+            logger.warning("No predictions received from endpoint to store in database.")
 
-        cur.execute(
-            "INSERT INTO predictions (timestamp, prediction) VALUES (%s, %s)",
-            (timestamp, prediction_jsonb)
-        )
         conn.commit()
         cur.close()
         conn.close()
-
-        logger.info(f"Prediction stored in database for {len(prediction_values)} series.")
-
+        
+        logger.info("Prediction storage process completed.")
+        
+    except requests.exceptions.HTTPError as http_err:
+        logger.error(f"HTTP error occurred while calling endpoint: {http_err}. Response: {response.text}", exc_info=True)
+        return func.HttpResponse(f"Endpoint HTTP error: {http_err}. Response: {response.text}", status_code=response.status_code)
+    except requests.exceptions.ConnectionError as conn_err:
+        logger.error(f"Connection error while calling endpoint: {conn_err}", exc_info=True)
+        return func.HttpResponse(f"Endpoint connection error: {conn_err}", status_code=503)
+    except requests.exceptions.Timeout as timeout_err:
+        logger.error(f"Timeout error while calling endpoint: {timeout_err}", exc_info=True)
+        return func.HttpResponse(f"Endpoint timeout error: {timeout_err}", status_code=504)
+    except requests.exceptions.RequestException as req_err:
+        logger.error(f"General request error while calling endpoint: {req_err}", exc_info=True)
+        return func.HttpResponse(f"Error calling endpoint: {req_err}", status_code=500)
     except psycopg2.Error as e:
-        logger.error(f"Database error: {str(e)}")
+        logger.error(f"Database error: {str(e)}", exc_info=True)
         return func.HttpResponse(f"Database error: {str(e)}", status_code=500)
     except Exception as e:
-        logger.error(f"Error processing predictions or saving to DB: {str(e)}")
-        return func.HttpResponse(f"Prediction processing or DB save error: {str(e)}", status_code=500)
+        logger.error(f"An unexpected error occurred during prediction processing or database insertion: {str(e)}", exc_info=True)
+        return func.HttpResponse(f"Prediction processing error: {str(e)}", status_code=500)
 
+    # Final successful response
     return func.HttpResponse(
         json.dumps({
             "status": "success", 
             "message": "Predictions stored successfully",
-            "number_of_series_predicted": len(prediction_values),
-            "sample_first_prediction_mean_length": len(prediction_values[0]['mean']) if prediction_values else 0
+            "prediction_count": len(prediction_values)
         }),
-        status_code=200,
         mimetype="application/json"
     )
