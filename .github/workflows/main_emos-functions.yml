@@ -34,6 +34,9 @@ jobs:
           python -m venv venv
           source venv/bin/activate
 
+      - name: Purge pip cache
+        run: pip cache purge   
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 
