@@ -1,8 +1,8 @@
-name: Deploy Azure Function App - emos-functions-v2
+name: Deploy to Azure Function App - emos-functions-v2 (OIDC)
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
 
 env:
   AZURE_FUNCTIONAPP_PACKAGE_PATH: 'TriggerPrediction'
@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Zip Function App package
@@ -20,9 +20,16 @@ jobs:
           cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
           zip -r ../release.zip . -x "*.pyc" "*/__pycache__/*"
 
-      - name: Deploy to Azure Functions
-        uses: Azure/functions-action@v1
+      - name: Azure Login
+        uses: azure/login@v2
         with:
-          app-name: 'emos-functions-v2'  # Make sure this matches your Function App in Azure
-          package: release.zip
-          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure Function App
+        run: |
+          az functionapp deployment source config-zip \
+            --name emos-functions-v2 \
+            --resource-group voiceofthegame1-rg \
+            --src release.zip
