@@ -30,19 +30,21 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Install dependencies into function app folder's .python_packages
           python -m pip install --upgrade pip
           pip install --no-cache-dir -r requirements.txt --target=".python_packages/lib/site-packages"
 
       - name: Prepare deployment package
         run: |
-          rm -rf ./deploy_package
+          rm -rf deploy_package
           mkdir deploy_package
 
-          # Copy entire repo contents (including all functions and host.json)
-          cp -r ./* deploy_package/
+          # Copy all files/folders except deploy_package itself
+          for item in * .*; do
+            if [[ "$item" != "deploy_package" && "$item" != "." && "$item" != ".." ]]; then
+              cp -r "$item" deploy_package/
+            fi
+          done
 
-          # Zip the deployment package
           cd deploy_package
           zip -r ../deploy.zip . -x "*.pyc" "*/__pycache__/*" "venv/*"
           cd ..
