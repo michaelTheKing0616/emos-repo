@@ -136,7 +136,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
                 if item_timestamp_str
                 else datetime.utcnow()
-                )
+                
                 
                 cur.execute(
                     "INSERT INTO predictions (timestamp, prediction) VALUES (%s, %s)",
