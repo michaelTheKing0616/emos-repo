@@ -80,19 +80,21 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         raw_response = response.text
         try:
             predictions = json.loads(raw_response)
-        except json.JSONDecodeError:
-            predictions = json.loads(json.loads(raw_response))  # handle double encoding
-            logger.warning("Endpoint returned JSON string instead of object — attempting to re-parse.")
+            if isinstance(predictions, str):  # double-encoded
+                predictions = json.loads(predictions)
+                logger.warning("Double-encoded JSON detected and decoded.")
+        except Exception as e:
+            logger.error(f"Failed to parse response JSON: {e}\nRaw response: {raw_response}", exc_info=True)
+            return func.HttpResponse("Invalid response format", status_code=500)
 
-        # Defensive handling if 'recommendations' key is absent
+        logger.info(f"Parsed keys: {list(predictions.keys()) if isinstance(predictions, dict) else type(predictions)}")
+
         if isinstance(predictions, dict):
             prediction_values = predictions.get("predictions", [])
             recommendations_values = predictions.get("recommendations", [])
-            if not isinstance(recommendations_values, list):
-                recommendations_values = [{}] * len(prediction_values[0]["mean"])
         elif isinstance(predictions, list):
             prediction_values = predictions
-            recommendations_values = [{}] * len(prediction_values[0]["mean"])
+            recommendations_values = []
         else:
             return func.HttpResponse("Invalid response format", status_code=500)
 
@@ -102,7 +104,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
 
-        # Ensure tables exist
         cur.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 timestamp TIMESTAMP NOT NULL,
@@ -154,7 +155,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             predictions_bulk.append((ts, building_id, pred))
             recommendations_bulk.append((ts, building_id, pred, json.dumps(rec)))
 
-            # Parse sensor values
             temp, hum, occ, energy, current, voltage, pf = [f[i] for f in dynamic_data]
 
             anomaly = None
