@@ -88,13 +88,13 @@ jobs:
           echo "Tenant ID: ${{ secrets.AZURE_TENANT_ID }}"
           echo "Subscription ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}"
 
-      - name: Azure CLI login with OIDC
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          enable-AzPSSession: true # Optional, for PowerShell compatibility
+      # - name: Azure CLI login with OIDC
+      #   uses: azure/login@v2
+      #   with:
+      #     client-id: ${{ secrets.AZURE_CLIENT_ID }}
+      #     tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      #     subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      #     enable-AzPSSession: true # Optional, for PowerShell compatibility
 
       - name: 'Deploy to Azure Functions'
         uses: Azure/functions-action@v1
@@ -103,6 +103,7 @@ jobs:
           app-name: 'emos-functions-v2'
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
 
       - name: Logout
         run: az logout
