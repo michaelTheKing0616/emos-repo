@@ -79,6 +79,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         predictions = None
         try:
             predictions = response.json()
+
+            # Handle case where the response is double-encoded JSON
+            if isinstance(predictions, str):
+                try:
+                    predictions = json.loads(predictions)
+                    logger.info("Successfully decoded double-encoded JSON from endpoint.")
+                except json.JSONDecodeError as decode_error:
+                    logger.error(f"Failed to decode stringified JSON: {decode_error}. Raw string: {predictions}")
+                    return func.HttpResponse(f"Error decoding nested JSON: {decode_error}", status_code=500)
+
             if isinstance(predictions, dict):
                 if "error" in predictions:
                     logger.error(f"Endpoint returned an error: {predictions['error']}")
