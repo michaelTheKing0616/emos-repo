@@ -61,13 +61,12 @@ jobs:
 
       - name: Zip artifact for deployment
         run: |
-          if [ -d "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}" ]; then
-            cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-            zip -r ../release.zip . -x "*.pyc" "*/__pycache__/*" "venv/*"
-          else
-            echo "Error: Directory ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }} not found!"
-            exit 1
-          fi
+          echo "Zipping from directory: $(pwd)"
+          ls -la
+          # Zip the entire repository root to include host.json at the root level
+          cd ..
+          zip -r release.zip . -x "*.pyc" "*/__pycache__/*" "venv/*" "*.git*" ".github/*"
+          ls -la
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
