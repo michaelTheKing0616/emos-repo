@@ -196,14 +196,14 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                   power_factor = EXCLUDED.power_factor
         """, sensor_data_bulk)
 
-        if anomaly_tags_bulk:
-            args_str = ','.join(cur.mogrify("(%s, %s, %s)", x).decode('utf-8') for x in anomaly_tags_bulk)
-            cur.execute(f"""
-                INSERT INTO predictions (timestamp, building_id, anomaly)
-                VALUES {args_str}
-                ON CONFLICT (timestamp, building_id) DO UPDATE
-                  SET anomaly = EXCLUDED.anomaly
-            """)
+        # Handle anomaly tags (only update the 'anomaly' field in predictions)
+        for anomaly_entry in anomaly_tags_bulk:
+            ts, building_id, anomaly = anomaly_entry
+            cur.execute("""
+                UPDATE predictions
+                SET anomaly = %s
+                WHERE timestamp = %s AND building_id = %s
+            """, (anomaly, ts, building_id))
 
         conn.commit()
         cur.close()
