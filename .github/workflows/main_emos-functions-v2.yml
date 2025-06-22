@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 env:
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: 'emos-functions-v2' # Updated to point to the function app directory
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: 'emos-functions-v2' # Points to the function app directory
   PYTHON_VERSION: '3.10' # Matches the runtime
 
 jobs:
@@ -34,16 +34,29 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          python -m pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt --target=".python_packages/lib/site-packages" --platform manylinux2014_x86_64 --only-binary=:all:
-          pip check
-          pip list
+          echo "Current directory: $(pwd)"
+          ls -la
+          if [ -d "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}" ]; then
+            cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+            echo "Changed to directory: $(pwd)"
+            python -m pip install --upgrade pip
+            pip install --no-cache-dir -r requirements.txt --target=".python_packages/lib/site-packages" --platform manylinux2014_x86_64 --only-binary=:all:
+            pip check
+            pip list
+          else
+            echo "Error: Directory ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }} not found!"
+            exit 1
+          fi
 
       - name: Zip artifact for deployment
         run: |
-          cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          zip -r ../release.zip . -x "*.pyc" "*/__pycache__/*" "venv/*"
+          if [ -d "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}" ]; then
+            cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+            zip -r ../release.zip . -x "*.pyc" "*/__pycache__/*" "venv/*"
+          else
+            echo "Error: Directory ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }} not found!"
+            exit 1
+          fi
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
