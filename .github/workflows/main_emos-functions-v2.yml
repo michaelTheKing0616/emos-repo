@@ -18,7 +18,7 @@ jobs:
       - name: Zip Function App package
         run: |
           cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          zip -r ../../release.zip . -x "*.pyc" "*/__pycache__/*"
+          zip -r ../release.zip . -x "*.pyc" "*/__pycache__/*"
 
       - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
