@@ -19,10 +19,14 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Zip Function App package
+      - name: Prepare zip with host.json at root
         run: |
-          cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          zip -r ../release.zip . -x "*.pyc" "*/__pycache__/*"
+          mkdir -p /tmp/deploy
+          cp host.json /tmp/deploy/
+          cp -r ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/* /tmp/deploy/
+          cd /tmp/deploy
+          zip -r release.zip .
+          mv release.zip $GITHUB_WORKSPACE/
 
       - name: Azure Login
         uses: azure/login@v2
@@ -35,5 +39,5 @@ jobs:
         run: |
           az functionapp deployment source config-zip \
             --name emos-functions-v2 \
-            --resource-group voiceofthegame1-rg \
+            --resource-group <YOUR_RESOURCE_GROUP_NAME> \
             --src release.zip
