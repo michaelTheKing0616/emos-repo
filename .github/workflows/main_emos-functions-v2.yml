@@ -12,9 +12,9 @@ on:
 
 env:
   PYTHON_VERSION: '3.10'
-  FUNCTION_APP_NAME: 'emos-functions-v2'           # Your Azure Function App name here
-  AZURE_RESOURCE_GROUP: 'your-resource-group'     # Set your Azure resource group here
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: 'TriggerPrediction'  # Function app folder containing your code
+  FUNCTION_APP_NAME: 'emos-functions-v2'          # Your Azure Function App name
+  AZURE_RESOURCE_GROUP: 'voiceofthegame1-rg'    # Your Azure resource group
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'             # Root folder containing all functions + host.json
 
 jobs:
   build:
@@ -30,28 +30,19 @@ jobs:
 
       - name: Install dependencies
         run: |
-          if [ -d "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}" ]; then
-            cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-            python -m pip install --upgrade pip
-            pip install --no-cache-dir -r ../requirements.txt --target=".python_packages/lib/site-packages"
-          else
-            echo "Error: Directory ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }} not found!"
-            exit 1
-          fi
+          # Install dependencies into function app folder's .python_packages
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt --target=".python_packages/lib/site-packages"
 
       - name: Prepare deployment package
         run: |
-          # Clean previous deploy folder
           rm -rf ./deploy_package
           mkdir deploy_package
 
-          # Copy function app files
-          cp -r ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/* deploy_package/
+          # Copy entire repo contents (including all functions and host.json)
+          cp -r ./* deploy_package/
 
-          # Copy host.json to root of package
-          cp host.json deploy_package/
-
-          # Zip deployment package inside workspace
+          # Zip the deployment package
           cd deploy_package
           zip -r ../deploy.zip . -x "*.pyc" "*/__pycache__/*" "venv/*"
           cd ..
