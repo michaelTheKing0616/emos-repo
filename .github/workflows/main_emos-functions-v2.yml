@@ -1,43 +1,97 @@
-name: Deploy to Azure Function App - emos-functions-v2 (OIDC)
+# File: .github/workflows/main_emos-functions-v2.yml
+name: Build and deploy Python Azure Functions - emos-functions-v2
 
 on:
   push:
-    branches: [main]
-
-permissions:
-  id-token: write
-  contents: read  # required to checkout the repo    
+    branches:
+      - main
+  workflow_dispatch:
 
 env:
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: 'TriggerPrediction'
+  PYTHON_VERSION: '3.10'
+  FUNCTION_APP_NAME: 'emos-functions-v2'       # Your Azure Function App name
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: '/tmp/deploy' # Temporary package directory
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Prepare zip with host.json at root
-        run: |
-          mkdir -p /tmp/deploy
-          cp host.json /tmp/deploy/
-          cp -r ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/* /tmp/deploy/
-          cd /tmp/deploy
-          zip -r release.zip .
-          mv release.zip $GITHUB_WORKSPACE/
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Azure Login
+      - name: Purge pip cache
+        run: pip cache purge
+
+      - name: Install dependencies to .python_packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt --target=".python_packages/lib/site-packages"
+
+      - name: Prepare deployment package
+        run: |
+          # Clean deploy folder
+          rm -rf ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          mkdir -p ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+
+          # Copy host.json and all function folders to deploy folder
+          cp host.json ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/
+          cp -r TriggerPrediction ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/
+          cp -r OptimizeEnergy ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/
+          cp -r FetchFirebaseData ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/
+
+          # Copy installed Python packages for dependencies
+          mkdir -p ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/.python_packages/lib/site-packages
+          cp -r .python_packages/lib/site-packages/* ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/.python_packages/lib/site-packages/
+
+          # Create zip package at workspace root for easy reference
+          cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          zip -r ../../deploy.zip .
+
+      - name: Upload deployment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-package
+          path: deploy.zip
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      id-token: write      # Required for OIDC auth with Azure login
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Download deployment artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-package
+          path: /tmp/deploy
+
+      - name: Azure login with OIDC
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy to Azure Function App
+      - name: Deploy to Azure Functions using zip deploy
         run: |
           az functionapp deployment source config-zip \
-            --name emos-functions-v2 \
-            --resource-group voiceofthegame1-rg \
-            --src release.zip
+            --name ${{ env.FUNCTION_APP_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --src /tmp/deploy/deploy.zip
+
+      - name: Logout from Azure CLI
+        run: az logout
+        if: always()
