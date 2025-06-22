@@ -12,9 +12,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def sanitize_iso_timestamp(ts: str) -> str:
-    """
-    Fix invalid ISO 8601 strings like '2025-05-19T14:42:21+00:00Z' → '2025-05-19T14:42:21+00:00'
-    """
     if ts.endswith('+00:00Z'):
         return ts.replace('+00:00Z', '+00:00')
     elif ts.endswith('Z') and '+00:00' in ts:
@@ -31,7 +28,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     db_url = os.getenv("DATABASE_URL")
 
     if not all([endpoint_url, api_key, db_url]):
-        logger.error(f"Missing environment variables: ENDPOINT_URL={'present' if endpoint_url else 'missing'}, API_KEY={'present' if api_key else 'missing'}, DATABASE_URL={'present' if db_url else 'missing'}")
+        logger.error("Missing environment variables.")
         return func.HttpResponse("Missing configuration", status_code=500)
 
     input_data = {}
@@ -39,14 +36,12 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         try:
             req_body = req.get_json()
         except ValueError:
-            logger.warning("Request body is not valid JSON. Attempting to use default data.")
+            logger.warning("Invalid JSON body. Using default test data.")
             req_body = None
 
         if req_body and "data" in req_body:
             input_data = req_body
-            logger.info("Using input data from request body.")
         else:
-            logger.info("No 'data' key in request body or invalid JSON. Generating default test data.")
             num_timesteps = 745
             base_datetime = datetime.now() - timedelta(hours=num_timesteps)
             target_values = [50.5 + (np.sin(i / 24 * np.pi) * 10) + (np.random.rand() * 5) for i in range(num_timesteps)]
@@ -68,11 +63,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     "feat_static_real": [1000.0]
                 }]
             }
-            logger.info("Default test data generated successfully.")
 
     except Exception as e:
-        logger.error(f"Error processing request body or generating default data: {str(e)}", exc_info=True)
-        return func.HttpResponse(f"Invalid request body or data generation error: {str(e)}", status_code=400)
+        logger.error(f"Error preparing input: {e}", exc_info=True)
+        return func.HttpResponse(f"Input preparation error: {e}", status_code=400)
 
     try:
         headers = {
@@ -80,41 +74,41 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "Authorization": f"Bearer {api_key}"
         }
 
-        logger.info(f"Sending data to endpoint: {endpoint_url}")
+        logger.info("Sending request to inference endpoint...")
         response = requests.post(endpoint_url, headers=headers, data=json.dumps(input_data))
-        logger.info(f"Endpoint response status: {response.status_code}")
-        logger.info(f"Endpoint response text (first 500 chars): {response.text[:500]}...")
+        logger.info(f"Response status: {response.status_code}")
+        logger.info(f"Response text (first 500 chars): {response.text[:500]}...")
         response.raise_for_status()
 
         raw_response = response.text
+
         try:
             predictions = json.loads(raw_response)
+            # 🔁 Handle nested/double JSON string
+            if isinstance(predictions, str):
+                logger.warning("Endpoint returned JSON string instead of object — attempting to re-parse.")
+                predictions = json.loads(predictions)
         except json.JSONDecodeError as json_e:
-            logger.error(f"Failed to decode JSON from endpoint response: {json_e}. Raw response: {raw_response}")
-            return func.HttpResponse(f"Error decoding prediction response: {json_e}", status_code=500)
+            logger.error(f"Failed to parse endpoint response: {json_e}. Raw: {raw_response}")
+            return func.HttpResponse(f"Error decoding response: {json_e}", status_code=500)
 
         if isinstance(predictions, dict):
             if "error" in predictions:
-                logger.error(f"Endpoint returned an error: {predictions['error']}")
+                logger.error(f"Endpoint error: {predictions['error']}")
                 return func.HttpResponse(f"Endpoint error: {predictions['error']}", status_code=500)
             elif "predictions" in predictions:
                 prediction_values = predictions["predictions"]
-                logger.info(f"Successfully received {len(prediction_values)} predictions from endpoint.")
             else:
-                logger.error(f"Unexpected dict response format: {predictions}")
-                return func.HttpResponse("Unexpected endpoint response format", status_code=500)
+                logger.error("Unexpected dict structure in prediction response.")
+                return func.HttpResponse("Unexpected prediction format", status_code=500)
         elif isinstance(predictions, list):
             prediction_values = predictions
-            logger.info(f"Successfully received {len(prediction_values)} predictions as a list from endpoint.")
         else:
-            logger.error(f"Unexpected response type: {type(predictions)}. Response: {predictions}")
-            return func.HttpResponse("Invalid endpoint response type", status_code=500)
+            logger.error(f"Unexpected type: {type(predictions)}")
+            return func.HttpResponse("Invalid prediction response type", status_code=500)
 
-        # Database insertion logic
-        logger.info("Attempting to connect to database...")
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
-
         cur.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 id SERIAL PRIMARY KEY,
@@ -124,46 +118,41 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             )
         """)
 
-        if prediction_values:
-            for item in prediction_values:
-                item_timestamp_str = item.get("start")
-                if item_timestamp_str:
-                    try:
-                        clean_ts = sanitize_iso_timestamp(item_timestamp_str)
-                        item_timestamp = datetime.fromisoformat(clean_ts)
-                    except Exception as ts_err:
-                        logger.warning(f"Could not parse timestamp '{item_timestamp_str}': {ts_err}")
-                        item_timestamp = datetime.utcnow()
-                else:
+        for item in prediction_values:
+            item_timestamp_str = item.get("start")
+            if item_timestamp_str:
+                try:
+                    clean_ts = sanitize_iso_timestamp(item_timestamp_str)
+                    item_timestamp = datetime.fromisoformat(clean_ts)
+                except Exception as ts_err:
+                    logger.warning(f"Failed to parse timestamp '{item_timestamp_str}': {ts_err}")
                     item_timestamp = datetime.utcnow()
+            else:
+                item_timestamp = datetime.utcnow()
 
-                cur.execute(
-                    "INSERT INTO predictions (timestamp, prediction) VALUES (%s, %s)",
-                    (item_timestamp, json.dumps(item))
-                )
-
-            logger.info(f"Stored {len(prediction_values)} individual predictions in database.")
-        else:
-            logger.warning("No predictions received from endpoint to store in database.")
+            cur.execute(
+                "INSERT INTO predictions (timestamp, prediction) VALUES (%s, %s)",
+                (item_timestamp, json.dumps(item))
+            )
 
         conn.commit()
         cur.close()
         conn.close()
 
-        logger.info("Prediction storage process completed.")
+        logger.info("Predictions stored in database.")
 
     except requests.exceptions.HTTPError as http_err:
-        logger.error(f"HTTP error occurred while calling endpoint: {http_err}. Response: {response.text}", exc_info=True)
-        return func.HttpResponse(f"Endpoint HTTP error: {http_err}. Response: {response.text}", status_code=response.status_code)
+        logger.error(f"HTTP error: {http_err}. Response: {response.text}", exc_info=True)
+        return func.HttpResponse(f"HTTP error: {http_err}", status_code=response.status_code)
     except requests.exceptions.RequestException as req_err:
-        logger.error(f"Request error while calling endpoint: {req_err}", exc_info=True)
-        return func.HttpResponse(f"Error calling endpoint: {req_err}", status_code=500)
-    except psycopg2.Error as e:
-        logger.error(f"Database error: {str(e)}", exc_info=True)
-        return func.HttpResponse(f"Database error: {str(e)}", status_code=500)
+        logger.error(f"Request exception: {req_err}", exc_info=True)
+        return func.HttpResponse(f"Request error: {req_err}", status_code=500)
+    except psycopg2.Error as db_err:
+        logger.error(f"Database error: {db_err}", exc_info=True)
+        return func.HttpResponse(f"Database error: {db_err}", status_code=500)
     except Exception as e:
-        logger.error(f"An unexpected error occurred: {str(e)}", exc_info=True)
-        return func.HttpResponse(f"Prediction processing error: {str(e)}", status_code=500)
+        logger.error(f"Unexpected error: {e}", exc_info=True)
+        return func.HttpResponse(f"Unexpected error: {e}", status_code=500)
 
     return func.HttpResponse(
         json.dumps({
