@@ -64,6 +64,13 @@ jobs:
           if [ -d "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}" ]; then
             cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
             zip -r ../release.zip . -x "*.pyc" "*/__pycache__/*" "venv/*"
+            # Validate the ZIP file
+            if [ -f "../release.zip" ] && unzip -t "../release.zip" > /dev/null 2>&1; then
+              echo "ZIP file created and validated successfully."
+            else
+              echo "Error: ZIP file creation failed or is corrupted!"
+              exit 1
+            fi
           else
             echo "Error: Directory ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }} not found!"
             exit 1
@@ -97,7 +104,16 @@ jobs:
       - name: Unzip artifact for deployment
         run: |
           mkdir -p ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          unzip /tmp/artifact/release.zip -d ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          if [ -f "/tmp/artifact/release.zip" ]; then
+            echo "Found release.zip, attempting to unzip..."
+            unzip /tmp/artifact/release.zip -d ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }} || {
+              echo "Error: Unzip failed. Check the ZIP file or target directory."
+              exit 1
+            }
+          else
+            echo "Error: release.zip not found at /tmp/artifact!"
+            exit 1
+          fi
 
       - name: Debug secrets
         run: |
