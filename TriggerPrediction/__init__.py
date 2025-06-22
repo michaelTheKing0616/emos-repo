@@ -6,6 +6,7 @@ import psycopg2
 import numpy as np
 from datetime import datetime, timedelta
 import logging
+from dateutil import parser
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -130,8 +131,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         if prediction_values:
             for item in prediction_values:
                 item_timestamp_str = item.get("start")
-                item_timestamp = (
-                    datetime.fromisoformat(item_timestamp_str.replace('Z', '+00:00'))
+                
+                item_timestamp = parser.isoparse(item_timestamp_str)
+
                     if item_timestamp_str
                     else datetime.utcnow()
                 )
