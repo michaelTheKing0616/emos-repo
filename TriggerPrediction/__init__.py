@@ -6,22 +6,9 @@ import psycopg2
 import numpy as np
 from datetime import datetime, timedelta
 import logging
-import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-SENSOR_VALIDATION_RANGES = {
-    "temperature": (-50, 60),
-    "humidity": (0, 100),
-    "occupancy": (0, 1000),
-    "energy": (0, 100000),
-    "current": (0, 1000),
-    "frequency": (45, 65),
-    "power": (0, 100000),
-    "power_factor": (0, 1),
-    "voltage": (0, 500)
-}
 
 def sanitize_iso_timestamp(ts: str) -> str:
     if ts.endswith('+00:00Z'):
@@ -32,15 +19,6 @@ def sanitize_iso_timestamp(ts: str) -> str:
         return ts.replace('Z', '+00:00')
     return ts
 
-def validate_sensor(name, value):
-    if value is None:
-        return None
-    try:
-        lo, hi = SENSOR_VALIDATION_RANGES.get(name, (float("-inf"), float("inf")))
-        return value if lo <= value <= hi else None
-    except Exception:
-        return None
-
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logger.info("Function TriggerPrediction started")
 
@@ -49,29 +27,43 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     db_url = os.getenv("DATABASE_URL")
 
     if not all([endpoint_url, api_key, db_url]):
-        return func.HttpResponse("Missing configuration", status_code=500)
+        return func.HttpResponse("Missing environment variables", status_code=500)
 
     try:
-        req_body = req.get_json()
-    except ValueError:
-        req_body = None
+        try:
+            req_body = req.get_json()
+        except ValueError:
+            req_body = None
 
-    if req_body and "data" in req_body:
-        input_data = req_body
-    else:
-        num_timesteps = 745
-        base_datetime = datetime.now() - timedelta(hours=num_timesteps)
-        target_values = [50 + np.sin(i/24*np.pi)*10 + np.random.rand()*5 for i in range(num_timesteps)]
-        dynamic_features_data = [[np.random.rand()*100 for _ in range(num_timesteps)] for _ in range(9)]
-        input_data = {
-            "data": [{
-                "start": base_datetime.isoformat(timespec='seconds') + 'Z',
-                "target": target_values,
-                "feat_dynamic_real": dynamic_features_data,
-                "feat_static_cat": [0],
-                "feat_static_real": [1000.0]
-            }]
-        }
+        if req_body and "data" in req_body:
+            input_data = req_body
+        else:
+            logger.info("Generating default test data")
+            num_timesteps = 745
+            base_datetime = datetime.utcnow() - timedelta(hours=num_timesteps)
+            target_values = [50.5 + (np.sin(i / 24 * np.pi) * 10) + (np.random.rand() * 5) for i in range(num_timesteps)]
+            dynamic_features_data = [
+                [20.0 + (np.sin(i / 24 * np.pi) * 5) for i in range(num_timesteps)],  # temperature
+                [60.0 + (np.cos(i / 48 * np.pi) * 10) for i in range(num_timesteps)],  # humidity
+                [1 if (i % 24 > 7 and i % 24 < 20) else 0 for i in range(num_timesteps)],  # occupancy
+                [max(0, 100 * np.sin(i / 24 * np.pi) - 50) for i in range(num_timesteps)],  # energy
+                [5.0 + (np.random.rand() * 3) for i in range(num_timesteps)],  # current
+                [230.0 + (np.sin(i / 12 * np.pi) * 1) for i in range(num_timesteps)],  # voltage
+                [0.5 + (np.random.rand() * 0.5) for i in range(num_timesteps)]  # power_factor
+            ]
+            input_data = {
+                "data": [{
+                    "start": base_datetime.isoformat(timespec='seconds') + 'Z',
+                    "target": target_values,
+                    "feat_dynamic_real": dynamic_features_data,
+                    "feat_static_cat": [0],
+                    "feat_static_real": [1000.0]
+                }]
+            }
+
+    except Exception as e:
+        logger.error(f"Input error: {str(e)}", exc_info=True)
+        return func.HttpResponse("Invalid input", status_code=400)
 
     try:
         headers = {
@@ -82,87 +74,152 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         logger.info("Sending request to inference endpoint...")
         response = requests.post(endpoint_url, headers=headers, data=json.dumps(input_data))
         logger.info(f"Response status: {response.status_code}")
-        logger.info(f"Response text (first 500 chars): {response.text[:500]}...")
+        logger.info(f"Response text (first 500 chars): {response.text[:500]}")
         response.raise_for_status()
 
         raw_response = response.text
         try:
-            predictions_json = json.loads(raw_response)
+            predictions = json.loads(raw_response)
         except json.JSONDecodeError:
-            predictions_json = json.loads(json.loads(raw_response))
+            predictions = json.loads(json.loads(raw_response))  # handle double encoding
+            logger.warning("Endpoint returned JSON string instead of object — attempting to re-parse.")
 
-        building_id = req.params.get("building_id") or "1"
-        start_time = datetime.fromisoformat(sanitize_iso_timestamp(input_data["data"][0]["start"]))
-        dynamic_feats = input_data["data"][0].get("feat_dynamic_real", [])
+        if isinstance(predictions, dict):
+            prediction_values = predictions.get("predictions", [])
+            recommendations_values = predictions.get("recommendations", [])
+        elif isinstance(predictions, list):
+            prediction_values = predictions
+            recommendations_values = []
+        else:
+            return func.HttpResponse("Invalid response format", status_code=500)
+
+        if not prediction_values:
+            return func.HttpResponse("No predictions returned", status_code=500)
 
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
 
+        # Ensure tables exist
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS predictions (
+                timestamp TIMESTAMP NOT NULL,
+                building_id INT NOT NULL,
+                predicted_energy DOUBLE PRECISION,
+                anomaly TEXT,
+                PRIMARY KEY (timestamp, building_id)
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS recommendations (
+                timestamp TIMESTAMP NOT NULL,
+                building_id INT NOT NULL,
+                predicted_energy DOUBLE PRECISION,
+                recommendations JSONB,
+                PRIMARY KEY (timestamp, building_id)
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sensor_data (
+                timestamp TIMESTAMP NOT NULL,
+                building_id INT NOT NULL,
+                temperature DOUBLE PRECISION,
+                humidity DOUBLE PRECISION,
+                occupancy INT,
+                energy DOUBLE PRECISION,
+                current DOUBLE PRECISION,
+                voltage DOUBLE PRECISION,
+                power_factor DOUBLE PRECISION,
+                PRIMARY KEY (timestamp, building_id)
+            );
+        """)
+
+        building_id = input_data["data"][0].get("feat_static_cat", [0])[0]
+        start = datetime.fromisoformat(sanitize_iso_timestamp(input_data["data"][0]["start"]))
+        dynamic_data = input_data["data"][0]["feat_dynamic_real"]
+        target = input_data["data"][0]["target"]
+        timestamps = [start + timedelta(hours=i) for i in range(len(target))]
+
+        # Prepare bulk insert
         predictions_bulk = []
         recommendations_bulk = []
         sensor_data_bulk = []
+        anomaly_tags_bulk = []
 
-        for idx, mean_value in enumerate(predictions_json["predictions"][0]["mean"]):
-            ts = start_time + timedelta(hours=idx)
-            ts_iso = ts.replace(tzinfo=None)
+        for i, ts in enumerate(timestamps):
+            pred = prediction_values[0]["mean"][i] if i < len(prediction_values[0]["mean"]) else None
+            rec = recommendations_values[i] if i < len(recommendations_values) else {}
 
-            predictions_bulk.append((ts_iso, building_id, mean_value))
+            predictions_bulk.append((ts, building_id, pred))
+            recommendations_bulk.append((ts, building_id, pred, json.dumps(rec)))
 
-            recommendations_bulk.append((ts_iso, building_id, mean_value, json.dumps({"tag": "ok"})))
+            # Parse sensor values
+            temp, hum, occ, energy, current, voltage, pf = [f[i] for f in dynamic_data]
 
-            sensor_data_bulk.append((
-                ts_iso, building_id,
-                validate_sensor("temperature", dynamic_feats[0][idx] if len(dynamic_feats) > 0 else None),
-                validate_sensor("humidity", dynamic_feats[1][idx] if len(dynamic_feats) > 1 else None),
-                validate_sensor("occupancy", dynamic_feats[2][idx] if len(dynamic_feats) > 2 else None),
-                validate_sensor("energy", dynamic_feats[3][idx] if len(dynamic_feats) > 3 else None),
-                validate_sensor("current", dynamic_feats[4][idx] if len(dynamic_feats) > 4 else None),
-                validate_sensor("frequency", dynamic_feats[5][idx] if len(dynamic_feats) > 5 else None),
-                validate_sensor("power", dynamic_feats[6][idx] if len(dynamic_feats) > 6 else None),
-                validate_sensor("power_factor", dynamic_feats[7][idx] if len(dynamic_feats) > 7 else None),
-                validate_sensor("voltage", dynamic_feats[8][idx] if len(dynamic_feats) > 8 else None)
-            )
+            # Validate ranges (e.g., temperature)
+            anomaly = None
+            if not (10 <= temp <= 40):
+                anomaly = f"temperature_out_of_range:{temp}"
+            elif not (0.4 <= pf <= 1.0):
+                anomaly = f"power_factor_abnormal:{pf}"
 
+            sensor_data_bulk.append((ts, building_id, temp, hum, occ, energy, current, voltage, pf))
+
+            if anomaly:
+                anomaly_tags_bulk.append((ts, building_id, anomaly))
+
+        # Bulk insert (upsert)
         cur.executemany("""
             INSERT INTO predictions (timestamp, building_id, predicted_energy)
             VALUES (%s, %s, %s)
-            ON CONFLICT (timestamp, building_id) DO UPDATE SET
-                predicted_energy = EXCLUDED.predicted_energy
+            ON CONFLICT (timestamp, building_id) DO UPDATE
+              SET predicted_energy = EXCLUDED.predicted_energy
         """, predictions_bulk)
 
         cur.executemany("""
             INSERT INTO recommendations (timestamp, building_id, predicted_energy, recommendations)
             VALUES (%s, %s, %s, %s)
-            ON CONFLICT (timestamp, building_id) DO UPDATE SET
-                predicted_energy = EXCLUDED.predicted_energy,
-                recommendations = EXCLUDED.recommendations
+            ON CONFLICT (timestamp, building_id) DO UPDATE
+              SET predicted_energy = EXCLUDED.predicted_energy,
+                  recommendations = EXCLUDED.recommendations
         """, recommendations_bulk)
 
         cur.executemany("""
-            INSERT INTO sensor_data (
-                timestamp, building_id, temperature, humidity, occupancy, energy,
-                current, frequency, power, power_factor, voltage
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (timestamp, building_id) DO UPDATE SET
-                temperature = EXCLUDED.temperature,
-                humidity = EXCLUDED.humidity,
-                occupancy = EXCLUDED.occupancy,
-                energy = EXCLUDED.energy,
-                current = EXCLUDED.current,
-                frequency = EXCLUDED.frequency,
-                power = EXCLUDED.power,
-                power_factor = EXCLUDED.power_factor,
-                voltage = EXCLUDED.voltage
+            INSERT INTO sensor_data (timestamp, building_id, temperature, humidity, occupancy, energy, current, voltage, power_factor)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (timestamp, building_id) DO UPDATE
+              SET temperature = EXCLUDED.temperature,
+                  humidity = EXCLUDED.humidity,
+                  occupancy = EXCLUDED.occupancy,
+                  energy = EXCLUDED.energy,
+                  current = EXCLUDED.current,
+                  voltage = EXCLUDED.voltage,
+                  power_factor = EXCLUDED.power_factor
         """, sensor_data_bulk)
+
+        if anomaly_tags_bulk:
+            args_str = ','.join(cur.mogrify("(%s, %s, %s)", x).decode('utf-8') for x in anomaly_tags_bulk)
+            cur.execute(f"""
+                INSERT INTO predictions (timestamp, building_id, anomaly)
+                VALUES {args_str}
+                ON CONFLICT (timestamp, building_id) DO UPDATE
+                  SET anomaly = EXCLUDED.anomaly
+            """)
 
         conn.commit()
         cur.close()
         conn.close()
 
-        return func.HttpResponse(
-            json.dumps({"status": "success", "prediction_count": len(predictions_bulk)}),
-            mimetype="application/json")
-
     except Exception as e:
-        logger.error(f"Unexpected error: {e}", exc_info=True)
-        return func.HttpResponse("Internal server error", status_code=500)
+        logger.error(f"Processing error: {e}", exc_info=True)
+        return func.HttpResponse(f"Error: {str(e)}", status_code=500)
+
+    return func.HttpResponse(
+        json.dumps({
+            "status": "success",
+            "stored_predictions": len(predictions_bulk),
+            "stored_sensor_data": len(sensor_data_bulk),
+            "stored_recommendations": len(recommendations_bulk),
+            "anomalies_detected": len(anomaly_tags_bulk)
+        }),
+        mimetype="application/json"
+    )
