@@ -1,5 +1,4 @@
-# File: .github/workflows/main_emos-functions-v2.yml
-name: Build and deploy Python Azure Functions - emos-functions-v2
+name: Build and Deploy Python Azure Functions
 
 on:
   push:
@@ -9,89 +8,76 @@ on:
 
 env:
   PYTHON_VERSION: '3.10'
-  FUNCTION_APP_NAME: 'emos-functions-v2'       # Your Azure Function App name
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: '/tmp/deploy' # Temporary package directory
+  FUNCTION_APP_NAME: 'emos-functions-v2'           # Your Azure Function App name here
+  AZURE_RESOURCE_GROUP: 'your-resource-group'     # Set your Azure resource group here
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: 'TriggerPrediction'  # Function app folder containing your code
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Python ${{ env.PYTHON_VERSION }}
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Purge pip cache
-        run: pip cache purge
-
-      - name: Install dependencies to .python_packages
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt --target=".python_packages/lib/site-packages"
+          if [ -d "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}" ]; then
+            cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+            python -m pip install --upgrade pip
+            pip install --no-cache-dir -r ../requirements.txt --target=".python_packages/lib/site-packages"
+          else
+            echo "Error: Directory ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }} not found!"
+            exit 1
+          fi
 
       - name: Prepare deployment package
         run: |
-          # Clean deploy folder
-          rm -rf ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          mkdir -p ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          # Clean previous deploy folder
+          rm -rf ./deploy_package
+          mkdir deploy_package
 
-          # Copy host.json and all function folders to deploy folder
-          cp host.json ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/
-          cp -r TriggerPrediction ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/
-          cp -r OptimizeEnergy ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/
-          cp -r FetchFirebaseData ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/
+          # Copy function app files
+          cp -r ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/* deploy_package/
 
-          # Copy installed Python packages for dependencies
-          mkdir -p ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/.python_packages/lib/site-packages
-          cp -r .python_packages/lib/site-packages/* ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/.python_packages/lib/site-packages/
+          # Copy host.json to root of package
+          cp host.json deploy_package/
 
-          # Create zip package at workspace root for easy reference
-          cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          zip -r ../../deploy.zip .
+          # Zip deployment package inside workspace
+          cd deploy_package
+          zip -r ../deploy.zip . -x "*.pyc" "*/__pycache__/*" "venv/*"
+          cd ..
 
-      - name: Upload deployment artifact
+      - name: Upload artifact (optional)
         uses: actions/upload-artifact@v4
         with:
-          name: deploy-package
+          name: functionapp-package
           path: deploy.zip
 
   deploy:
-    runs-on: ubuntu-latest
     needs: build
-    permissions:
-      id-token: write      # Required for OIDC auth with Azure login
-      contents: read
-
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Download deployment artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: deploy-package
-          path: /tmp/deploy
-
-      - name: Azure login with OIDC
+      - name: Azure Login
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy to Azure Functions using zip deploy
+      - name: Deploy to Azure Function App
         run: |
           az functionapp deployment source config-zip \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --name ${{ env.FUNCTION_APP_NAME }} \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --src /tmp/deploy/deploy.zip
+            --src deploy.zip
 
-      - name: Logout from Azure CLI
+      - name: Azure Logout
         run: az logout
-        if: always()
