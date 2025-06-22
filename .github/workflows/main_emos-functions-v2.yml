@@ -70,19 +70,12 @@ jobs:
           fi
 
       - name: Upload artifact for deployment job
-        run: |
-          cd $(dirname "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}")
-          echo "Uploading from directory: $(pwd)"
-          ls -la
-          if [ ! -f "release.zip" ]; then
-            echo "Error: release.zip not found!"
-            exit 1
-          fi
         uses: actions/upload-artifact@v4
         with:
           name: python-app
-          path: release.zip
-          if-no-files-found: error
+          path: |
+            release.zip
+            !venv/
 
   deploy:
     runs-on: ubuntu-latest
@@ -96,10 +89,9 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: python-app
-          path: /tmp/deploy-package
 
       - name: Unzip artifact for deployment
-        run: unzip /tmp/deploy-package/release.zip -d ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+        run: unzip release.zip -d ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
 
       - name: Debug secrets
         run: |
