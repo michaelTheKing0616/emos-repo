@@ -11,6 +11,18 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+SENSOR_VALIDATION_RANGES = {
+    "temperature": (-50, 60),
+    "humidity": (0, 100),
+    "occupancy": (0, 1000),
+    "energy": (0, 100000),
+    "current": (0, 1000),
+    "frequency": (45, 65),
+    "power": (0, 100000),
+    "power_factor": (0, 1),
+    "voltage": (0, 500)
+}
+
 def sanitize_iso_timestamp(ts: str) -> str:
     if ts.endswith('+00:00Z'):
         return ts.replace('+00:00Z', '+00:00')
@@ -20,6 +32,15 @@ def sanitize_iso_timestamp(ts: str) -> str:
         return ts.replace('Z', '+00:00')
     return ts
 
+def validate_sensor(name, value):
+    if value is None:
+        return None
+    try:
+        lo, hi = SENSOR_VALIDATION_RANGES.get(name, (float("-inf"), float("inf")))
+        return value if lo <= value <= hi else None
+    except Exception:
+        return None
+
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logger.info("Function TriggerPrediction started")
 
@@ -28,45 +49,29 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     db_url = os.getenv("DATABASE_URL")
 
     if not all([endpoint_url, api_key, db_url]):
-        logger.error("Missing environment variables.")
         return func.HttpResponse("Missing configuration", status_code=500)
 
-    input_data = {}
     try:
-        try:
-            req_body = req.get_json()
-        except ValueError:
-            logger.warning("Invalid JSON body. Using default test data.")
-            req_body = None
+        req_body = req.get_json()
+    except ValueError:
+        req_body = None
 
-        if req_body and "data" in req_body:
-            input_data = req_body
-        else:
-            num_timesteps = 745
-            base_datetime = datetime.now() - timedelta(hours=num_timesteps)
-            target_values = [50.5 + (np.sin(i / 24 * np.pi) * 10) + (np.random.rand() * 5) for i in range(num_timesteps)]
-            dynamic_features_data = [
-                [20.0 + (np.sin(i / 24 * np.pi) * 5) for i in range(num_timesteps)],
-                [60.0 + (np.cos(i / 48 * np.pi) * 10) for i in range(num_timesteps)],
-                [1 if (i % 24 > 7 and i % 24 < 20) else 0 for i in range(num_timesteps)],
-                [max(0, 100 * np.sin(i / 24 * np.pi) - 50) for i in range(num_timesteps)],
-                [5.0 + (np.random.rand() * 3) for i in range(num_timesteps)],
-                [230.0 + (np.sin(i / 12 * np.pi) * 1) for i in range(num_timesteps)],
-                [0.5 + (np.random.rand() * 0.5) for i in range(num_timesteps)]
-            ]
-            input_data = {
-                "data": [{
-                    "start": base_datetime.isoformat(timespec='seconds') + 'Z',
-                    "target": target_values,
-                    "feat_dynamic_real": dynamic_features_data,
-                    "feat_static_cat": [0],
-                    "feat_static_real": [1000.0]
-                }]
-            }
-
-    except Exception as e:
-        logger.error(f"Error preparing input: {e}", exc_info=True)
-        return func.HttpResponse(f"Input preparation error: {e}", status_code=400)
+    if req_body and "data" in req_body:
+        input_data = req_body
+    else:
+        num_timesteps = 745
+        base_datetime = datetime.now() - timedelta(hours=num_timesteps)
+        target_values = [50 + np.sin(i/24*np.pi)*10 + np.random.rand()*5 for i in range(num_timesteps)]
+        dynamic_features_data = [[np.random.rand()*100 for _ in range(num_timesteps)] for _ in range(9)]
+        input_data = {
+            "data": [{
+                "start": base_datetime.isoformat(timespec='seconds') + 'Z',
+                "target": target_values,
+                "feat_dynamic_real": dynamic_features_data,
+                "feat_static_cat": [0],
+                "feat_static_real": [1000.0]
+            }]
+        }
 
     try:
         headers = {
@@ -81,84 +86,83 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         response.raise_for_status()
 
         raw_response = response.text
-
         try:
-            predictions = json.loads(raw_response)
-            # 🔁 Handle nested/double JSON string
-            if isinstance(predictions, str):
-                logger.warning("Endpoint returned JSON string instead of object — attempting to re-parse.")
-                predictions = json.loads(predictions)
-        except json.JSONDecodeError as json_e:
-            logger.error(f"Failed to parse endpoint response: {json_e}. Raw: {raw_response}")
-            return func.HttpResponse(f"Error decoding response: {json_e}", status_code=500)
+            predictions_json = json.loads(raw_response)
+        except json.JSONDecodeError:
+            predictions_json = json.loads(json.loads(raw_response))
 
-        if isinstance(predictions, dict):
-            if "error" in predictions:
-                logger.error(f"Endpoint error: {predictions['error']}")
-                return func.HttpResponse(f"Endpoint error: {predictions['error']}", status_code=500)
-            elif "predictions" in predictions:
-                prediction_values = predictions["predictions"]
-            else:
-                logger.error("Unexpected dict structure in prediction response.")
-                return func.HttpResponse("Unexpected prediction format", status_code=500)
-        elif isinstance(predictions, list):
-            prediction_values = predictions
-        else:
-            logger.error(f"Unexpected type: {type(predictions)}")
-            return func.HttpResponse("Invalid prediction response type", status_code=500)
+        building_id = req.params.get("building_id") or "1"
+        start_time = datetime.fromisoformat(sanitize_iso_timestamp(input_data["data"][0]["start"]))
+        dynamic_feats = input_data["data"][0].get("feat_dynamic_real", [])
 
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS predictions (
-                id SERIAL PRIMARY KEY,
-                timestamp TIMESTAMP NOT NULL,
-                prediction JSONB NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
-        for item in prediction_values:
-            item_timestamp_str = item.get("start")
-            if item_timestamp_str:
-                try:
-                    clean_ts = sanitize_iso_timestamp(item_timestamp_str)
-                    item_timestamp = datetime.fromisoformat(clean_ts)
-                except Exception as ts_err:
-                    logger.warning(f"Failed to parse timestamp '{item_timestamp_str}': {ts_err}")
-                    item_timestamp = datetime.utcnow()
-            else:
-                item_timestamp = datetime.utcnow()
+        predictions_bulk = []
+        recommendations_bulk = []
+        sensor_data_bulk = []
 
-            cur.execute(
-                "INSERT INTO predictions (timestamp, prediction) VALUES (%s, %s)",
-                (item_timestamp, json.dumps(item))
+        for idx, mean_value in enumerate(predictions_json["predictions"][0]["mean"]):
+            ts = start_time + timedelta(hours=idx)
+            ts_iso = ts.replace(tzinfo=None)
+
+            predictions_bulk.append((ts_iso, building_id, mean_value))
+
+            recommendations_bulk.append((ts_iso, building_id, mean_value, json.dumps({"tag": "ok"})))
+
+            sensor_data_bulk.append((
+                ts_iso, building_id,
+                validate_sensor("temperature", dynamic_feats[0][idx] if len(dynamic_feats) > 0 else None),
+                validate_sensor("humidity", dynamic_feats[1][idx] if len(dynamic_feats) > 1 else None),
+                validate_sensor("occupancy", dynamic_feats[2][idx] if len(dynamic_feats) > 2 else None),
+                validate_sensor("energy", dynamic_feats[3][idx] if len(dynamic_feats) > 3 else None),
+                validate_sensor("current", dynamic_feats[4][idx] if len(dynamic_feats) > 4 else None),
+                validate_sensor("frequency", dynamic_feats[5][idx] if len(dynamic_feats) > 5 else None),
+                validate_sensor("power", dynamic_feats[6][idx] if len(dynamic_feats) > 6 else None),
+                validate_sensor("power_factor", dynamic_feats[7][idx] if len(dynamic_feats) > 7 else None),
+                validate_sensor("voltage", dynamic_feats[8][idx] if len(dynamic_feats) > 8 else None)
             )
+
+        cur.executemany("""
+            INSERT INTO predictions (timestamp, building_id, predicted_energy)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (timestamp, building_id) DO UPDATE SET
+                predicted_energy = EXCLUDED.predicted_energy
+        """, predictions_bulk)
+
+        cur.executemany("""
+            INSERT INTO recommendations (timestamp, building_id, predicted_energy, recommendations)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (timestamp, building_id) DO UPDATE SET
+                predicted_energy = EXCLUDED.predicted_energy,
+                recommendations = EXCLUDED.recommendations
+        """, recommendations_bulk)
+
+        cur.executemany("""
+            INSERT INTO sensor_data (
+                timestamp, building_id, temperature, humidity, occupancy, energy,
+                current, frequency, power, power_factor, voltage
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (timestamp, building_id) DO UPDATE SET
+                temperature = EXCLUDED.temperature,
+                humidity = EXCLUDED.humidity,
+                occupancy = EXCLUDED.occupancy,
+                energy = EXCLUDED.energy,
+                current = EXCLUDED.current,
+                frequency = EXCLUDED.frequency,
+                power = EXCLUDED.power,
+                power_factor = EXCLUDED.power_factor,
+                voltage = EXCLUDED.voltage
+        """, sensor_data_bulk)
 
         conn.commit()
         cur.close()
         conn.close()
 
-        logger.info("Predictions stored in database.")
+        return func.HttpResponse(
+            json.dumps({"status": "success", "prediction_count": len(predictions_bulk)}),
+            mimetype="application/json")
 
-    except requests.exceptions.HTTPError as http_err:
-        logger.error(f"HTTP error: {http_err}. Response: {response.text}", exc_info=True)
-        return func.HttpResponse(f"HTTP error: {http_err}", status_code=response.status_code)
-    except requests.exceptions.RequestException as req_err:
-        logger.error(f"Request exception: {req_err}", exc_info=True)
-        return func.HttpResponse(f"Request error: {req_err}", status_code=500)
-    except psycopg2.Error as db_err:
-        logger.error(f"Database error: {db_err}", exc_info=True)
-        return func.HttpResponse(f"Database error: {db_err}", status_code=500)
     except Exception as e:
         logger.error(f"Unexpected error: {e}", exc_info=True)
-        return func.HttpResponse(f"Unexpected error: {e}", status_code=500)
-
-    return func.HttpResponse(
-        json.dumps({
-            "status": "success",
-            "message": "Predictions stored successfully",
-            "prediction_count": len(prediction_values) if prediction_values else 0
-        }),
-        mimetype="application/json"
-    )
+        return func.HttpResponse("Internal server error", status_code=500)
