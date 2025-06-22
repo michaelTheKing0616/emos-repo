@@ -71,7 +71,7 @@ jobs:
 
       - name: Upload artifact for deployment job
         run: |
-          cd ..
+          cd $(dirname "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}")
           echo "Uploading from directory: $(pwd)"
           ls -la
           if [ -f "release.zip" ]; then
