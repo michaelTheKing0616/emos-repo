@@ -92,9 +92,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: python-app
+          path: /tmp/artifact
 
       - name: Unzip artifact for deployment
-        run: unzip release.zip -d ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+        run: |
+          mkdir -p ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          unzip /tmp/artifact/release.zip -d ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
 
       - name: Debug secrets
         run: |
