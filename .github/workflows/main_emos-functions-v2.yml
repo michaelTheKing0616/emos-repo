@@ -39,5 +39,5 @@ jobs:
         run: |
           az functionapp deployment source config-zip \
             --name emos-functions-v2 \
-            --resource-group <YOUR_RESOURCE_GROUP_NAME> \
+            --resource-group voiceofthegame1-rg \
             --src release.zip
