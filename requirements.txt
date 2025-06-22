@@ -1,6 +1,6 @@
 azure-functions==1.18.0
 requests==2.31.0
-psycopg2==2.9.5 # Changed to a version that is more commonly compatible with older dependencies
+psycopg2-binary==2.9.5 # Changed to a version that is more commonly compatible with older dependencies
 numpy==1.23.5
 pandas==1.5.3  # Changed from 1.0.0 to 1.5.3 for Python 3.10 compatibility
 gluonts==0.14.3
