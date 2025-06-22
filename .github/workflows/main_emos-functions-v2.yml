@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 env:
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: 'emos-functions-v2' # Points to the function app directory
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: 'TriggerPrediction' # Updated to match the actual directory
   PYTHON_VERSION: '3.10' # Matches the runtime
 
 jobs:
