@@ -39,10 +39,21 @@ jobs:
           if [ -d "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}" ]; then
             cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
             echo "Changed to directory: $(pwd)"
-            python -m pip install --upgrade pip
-            pip install --no-cache-dir -r requirements.txt --target=".python_packages/lib/site-packages" --platform manylinux2014_x86_64 --only-binary=:all:
-            pip check
-            pip list
+            if [ -f "../requirements.txt" ]; then
+              echo "Found requirements.txt in root with content:"
+              cat ../requirements.txt
+              python -m pip install --upgrade pip
+              echo "Installing dependencies..."
+              pip install --no-cache-dir -r ../requirements.txt --target=".python_packages/lib/site-packages" --platform manylinux2014_x86_64 --only-binary=:all: || {
+                echo "Error: Failed to install dependencies. Check the requirements.txt file or pip logs."
+                exit 1
+              }
+              pip check
+              pip list
+            else
+              echo "Error: requirements.txt not found in root directory!"
+              exit 1
+            fi
           else
             echo "Error: Directory ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }} not found!"
             exit 1
@@ -108,7 +119,6 @@ jobs:
           app-name: 'emos-functions-v2'
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          # Explicitly avoid publish profile to enforce OIDC
           publish-profile: '' # Ensure no publish profile interferes
 
       - name: Logout
