@@ -134,8 +134,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 
                 item_timestamp = parser.isoparse(item_timestamp_str)
 
-                    if item_timestamp_str
-                    else datetime.utcnow()
+                if item_timestamp_str
+                else datetime.utcnow()
                 )
                 
                 cur.execute(
