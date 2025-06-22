@@ -113,12 +113,22 @@ jobs:
         continue-on-error: false
 
       - name: 'Deploy to Azure Functions'
+        run: |
+          # Create a temporary directory for the deployment package
+          mkdir -p /tmp/deploy-package
+          # Copy the TriggerPrediction contents
+          cp -r ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/* /tmp/deploy-package/
+          # Copy host.json from the root to the package root
+          cp /github/workspace/host.json /tmp/deploy-package/host.json
+          # Zip the package for deployment
+          cd /tmp/deploy-package
+          zip -r deploy.zip .
         uses: Azure/functions-action@v1
         id: deploy-to-function
         with:
           app-name: 'emos-functions-v2'
           slot-name: 'Production'
-          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          package: /tmp/deploy-package/deploy.zip
           publish-profile: '' # Ensure no publish profile interferes
 
       - name: Logout
