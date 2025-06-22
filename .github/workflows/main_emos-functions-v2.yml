@@ -62,10 +62,8 @@ jobs:
       - name: Zip artifact for deployment
         run: |
           if [ -d "${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}" ]; then
-            cd ..
-            echo "Zipping from directory: $(pwd)"
-            ls -la
-            zip -r release.zip . -x "*.pyc" "*/__pycache__/*" "venv/*" "*.git*" ".github/*"
+            cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+            zip -r ../release.zip . -x "*.pyc" "*/__pycache__/*" "venv/*"
           else
             echo "Error: Directory ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }} not found!"
             exit 1
@@ -75,7 +73,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: python-app
-          path: release.zip
+          path: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/../release.zip
+          if-no-files-found: error
 
   deploy:
     runs-on: ubuntu-latest
