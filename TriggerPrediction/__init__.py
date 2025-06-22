@@ -84,12 +84,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             predictions = json.loads(json.loads(raw_response))  # handle double encoding
             logger.warning("Endpoint returned JSON string instead of object — attempting to re-parse.")
 
+        # Defensive handling if 'recommendations' key is absent
         if isinstance(predictions, dict):
             prediction_values = predictions.get("predictions", [])
             recommendations_values = predictions.get("recommendations", [])
+            if not isinstance(recommendations_values, list):
+                recommendations_values = [{}] * len(prediction_values[0]["mean"])
         elif isinstance(predictions, list):
             prediction_values = predictions
-            recommendations_values = []
+            recommendations_values = [{}] * len(prediction_values[0]["mean"])
         else:
             return func.HttpResponse("Invalid response format", status_code=500)
 
@@ -139,7 +142,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         target = input_data["data"][0]["target"]
         timestamps = [start + timedelta(hours=i) for i in range(len(target))]
 
-        # Prepare bulk insert
         predictions_bulk = []
         recommendations_bulk = []
         sensor_data_bulk = []
@@ -155,7 +157,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             # Parse sensor values
             temp, hum, occ, energy, current, voltage, pf = [f[i] for f in dynamic_data]
 
-            # Validate ranges (e.g., temperature)
             anomaly = None
             if not (10 <= temp <= 40):
                 anomaly = f"temperature_out_of_range:{temp}"
@@ -167,7 +168,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             if anomaly:
                 anomaly_tags_bulk.append((ts, building_id, anomaly))
 
-        # Bulk insert (upsert)
         cur.executemany("""
             INSERT INTO predictions (timestamp, building_id, predicted_energy)
             VALUES (%s, %s, %s)
@@ -196,14 +196,14 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                   power_factor = EXCLUDED.power_factor
         """, sensor_data_bulk)
 
-        # Handle anomaly tags (only update the 'anomaly' field in predictions)
-        for anomaly_entry in anomaly_tags_bulk:
-            ts, building_id, anomaly = anomaly_entry
-            cur.execute("""
-                UPDATE predictions
-                SET anomaly = %s
-                WHERE timestamp = %s AND building_id = %s
-            """, (anomaly, ts, building_id))
+        if anomaly_tags_bulk:
+            args_str = ','.join(cur.mogrify("(%s, %s, %s)", x).decode('utf-8') for x in anomaly_tags_bulk)
+            cur.execute(f"""
+                INSERT INTO predictions (timestamp, building_id, anomaly)
+                VALUES {args_str}
+                ON CONFLICT (timestamp, building_id) DO UPDATE
+                  SET anomaly = EXCLUDED.anomaly
+            """)
 
         conn.commit()
         cur.close()
