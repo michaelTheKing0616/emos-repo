@@ -112,7 +112,7 @@ jobs:
           enable-AzPSSession: true # Optional, for PowerShell compatibility
         continue-on-error: false
 
-      - name: 'Deploy to Azure Functions'
+      - name: Prepare deployment package
         run: |
           # Create a temporary directory for the deployment package
           mkdir -p /tmp/deploy-package
@@ -123,6 +123,8 @@ jobs:
           # Zip the package for deployment
           cd /tmp/deploy-package
           zip -r deploy.zip .
+
+      - name: 'Deploy to Azure Functions'
         uses: Azure/functions-action@v1
         id: deploy-to-function
         with:
