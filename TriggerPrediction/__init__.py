@@ -5,8 +5,8 @@ import os
 import psycopg2
 import numpy as np
 from datetime import datetime, timedelta
-import logging
 from dateutil import parser
+import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -80,16 +80,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         predictions = None
         try:
             predictions = response.json()
-
-            # Handle case where the response is double-encoded JSON
-            if isinstance(predictions, str):
-                try:
-                    predictions = json.loads(predictions)
-                    logger.info("Successfully decoded double-encoded JSON from endpoint.")
-                except json.JSONDecodeError as decode_error:
-                    logger.error(f"Failed to decode stringified JSON: {decode_error}. Raw string: {predictions}")
-                    return func.HttpResponse(f"Error decoding nested JSON: {decode_error}", status_code=500)
-
             if isinstance(predictions, dict):
                 if "error" in predictions:
                     logger.error(f"Endpoint returned an error: {predictions['error']}")
@@ -114,7 +104,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             logger.error(f"Error processing endpoint response: {e}", exc_info=True)
             return func.HttpResponse(f"Error processing response: {e}", status_code=500)
         
-        # Database insertion logic
         logger.info("Attempting to connect to database...")
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
@@ -122,21 +111,20 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 id SERIAL PRIMARY KEY,
-                timestamp TIMESTAMP NOT NULL,
+                timestamp TIMESTAMPTZ NOT NULL,
                 prediction JSONB NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
         """)
         
         if prediction_values:
             for item in prediction_values:
                 item_timestamp_str = item.get("start")
-                
-                item_timestamp = parser.isoparse(item_timestamp_str)
-
-                if item_timestamp_str
-                else datetime.utcnow()
-                
+                try:
+                    item_timestamp = parser.isoparse(item_timestamp_str) if item_timestamp_str else datetime.utcnow()
+                except Exception as parse_err:
+                    logger.error(f"Failed to parse timestamp '{item_timestamp_str}': {parse_err}")
+                    item_timestamp = datetime.utcnow()
                 
                 cur.execute(
                     "INSERT INTO predictions (timestamp, prediction) VALUES (%s, %s)",
