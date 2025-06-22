@@ -14,7 +14,6 @@ env:
   PYTHON_VERSION: '3.10'
   FUNCTION_APP_NAME: 'emos-functions-v2'          # Your Azure Function App name
   AZURE_RESOURCE_GROUP: 'voiceofthegame1-rg'    # Your Azure resource group
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'             # Root folder containing all functions + host.json
 
 jobs:
   build:
@@ -38,7 +37,7 @@ jobs:
           rm -rf deploy_package
           mkdir deploy_package
 
-          # Copy all files/folders except deploy_package itself
+          # Copy everything except deploy_package folder itself
           for item in * .*; do
             if [[ "$item" != "deploy_package" && "$item" != "." && "$item" != ".." ]]; then
               cp -r "$item" deploy_package/
@@ -49,7 +48,7 @@ jobs:
           zip -r ../deploy.zip . -x "*.pyc" "*/__pycache__/*" "venv/*"
           cd ..
 
-      - name: Upload artifact (optional)
+      - name: Upload deployment package artifact
         uses: actions/upload-artifact@v4
         with:
           name: functionapp-package
@@ -61,6 +60,12 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Download deployment package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: functionapp-package
+          path: .
 
       - name: Azure Login
         uses: azure/login@v2
@@ -74,7 +79,7 @@ jobs:
           az functionapp deployment source config-zip \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --name ${{ env.FUNCTION_APP_NAME }} \
-            --src deploy.zip
+            --src ./deploy.zip
 
       - name: Azure Logout
         run: az logout
