@@ -10,6 +10,8 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- [imports remain unchanged] ---
+
 def sanitize_iso_timestamp(ts: str) -> str:
     if ts.endswith('+00:00Z'):
         return ts.replace('+00:00Z', '+00:00')
@@ -18,18 +20,6 @@ def sanitize_iso_timestamp(ts: str) -> str:
     elif ts.endswith('Z'):
         return ts.replace('Z', '+00:00')
     return ts
-
-def try_parse_response(text):
-    """Handle various malformed or double-encoded JSON formats robustly."""
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, str):  # if it's double encoded
-            parsed = json.loads(parsed)
-            logger.warning("Double-encoded JSON detected and decoded.")
-        return parsed
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing failed: {e}")
-        return None
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logger.info("Function TriggerPrediction started")
@@ -89,19 +79,22 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         logger.info(f"Response text (first 500 chars): {response.text[:500]}")
         response.raise_for_status()
 
-        predictions = try_parse_response(response.text)
-        if predictions is None:
-            return func.HttpResponse("Invalid response format", status_code=500)
+        raw_response = response.text
+        try:
+            predictions = json.loads(raw_response)
+        except json.JSONDecodeError:
+            predictions = json.loads(json.loads(raw_response))
+            logger.warning("Double-encoded JSON detected and decoded.")
+
+        logger.info(f"Parsed keys: {list(predictions.keys()) if isinstance(predictions, dict) else 'Not a dict'}")
 
         if isinstance(predictions, dict):
             prediction_values = predictions.get("predictions", [])
             recommendations_values = predictions.get("recommendations", [])
         elif isinstance(predictions, list):
-            logger.warning("Wrapping list response in dict under 'predictions'")
             prediction_values = predictions
             recommendations_values = []
         else:
-            logger.error("Unsupported response format")
             return func.HttpResponse("Invalid response format", status_code=500)
 
         if not prediction_values:
@@ -110,7 +103,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
 
-        # Ensure tables exist
         cur.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 timestamp TIMESTAMP NOT NULL,
@@ -164,6 +156,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             except Exception as e:
                 logger.error(f"Error adding primary key to {table_name}: {e}", exc_info=True)
 
+        # ✅ Fix added here
+        safe_add_pk(cur, "predictions", "predictions_pk")
         safe_add_pk(cur, "recommendations", "recommendations_pk")
         safe_add_pk(cur, "sensor_data", "sensor_data_pk")
 
