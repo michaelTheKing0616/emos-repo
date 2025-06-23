@@ -80,14 +80,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         raw_response = response.text
         try:
             predictions = json.loads(raw_response)
-            if isinstance(predictions, str):  # double-encoded
-                predictions = json.loads(predictions)
-                logger.warning("Double-encoded JSON detected and decoded.")
-        except Exception as e:
-            logger.error(f"Failed to parse response JSON: {e}\nRaw response: {raw_response}", exc_info=True)
-            return func.HttpResponse("Invalid response format", status_code=500)
+        except json.JSONDecodeError:
+            predictions = json.loads(json.loads(raw_response))  # handle double encoding
+            logger.warning("Double-encoded JSON detected and decoded.")
 
-        logger.info(f"Parsed keys: {list(predictions.keys()) if isinstance(predictions, dict) else type(predictions)}")
+        logger.info(f"Parsed keys: {list(predictions.keys()) if isinstance(predictions, dict) else 'Not a dict'}")
 
         if isinstance(predictions, dict):
             prediction_values = predictions.get("predictions", [])
@@ -104,6 +101,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
 
+        # Ensure tables exist
         cur.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 timestamp TIMESTAMP NOT NULL,
@@ -118,8 +116,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 timestamp TIMESTAMP NOT NULL,
                 building_id INT NOT NULL,
                 predicted_energy DOUBLE PRECISION,
-                recommendations JSONB,
-                PRIMARY KEY (timestamp, building_id)
+                recommendations JSONB
             );
         """)
         cur.execute("""
@@ -132,10 +129,35 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 energy DOUBLE PRECISION,
                 current DOUBLE PRECISION,
                 voltage DOUBLE PRECISION,
-                power_factor DOUBLE PRECISION,
-                PRIMARY KEY (timestamp, building_id)
+                power_factor DOUBLE PRECISION
             );
         """)
+
+        # Add PKs if safe
+        def safe_add_pk(cur, table_name, pk_name):
+            cur.execute(f"""
+                SELECT timestamp, building_id
+                FROM public.{table_name}
+                GROUP BY timestamp, building_id
+                HAVING COUNT(*) > 1
+            """)
+            duplicates = cur.fetchall()
+            if duplicates:
+                logger.warning(f"Duplicate entries in {table_name}: {duplicates}")
+                return
+            try:
+                cur.execute(f"""
+                    ALTER TABLE public.{table_name}
+                    ADD CONSTRAINT {pk_name} PRIMARY KEY (timestamp, building_id)
+                """)
+                logger.info(f"Primary key added to {table_name}")
+            except psycopg2.errors.DuplicateObject:
+                logger.info(f"Primary key on {table_name} already exists.")
+            except Exception as e:
+                logger.error(f"Error adding primary key to {table_name}: {e}", exc_info=True)
+
+        safe_add_pk(cur, "recommendations", "recommendations_pk")
+        safe_add_pk(cur, "sensor_data", "sensor_data_pk")
 
         building_id = input_data["data"][0].get("feat_static_cat", [0])[0]
         start = datetime.fromisoformat(sanitize_iso_timestamp(input_data["data"][0]["start"]))
@@ -143,6 +165,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         target = input_data["data"][0]["target"]
         timestamps = [start + timedelta(hours=i) for i in range(len(target))]
 
+        # Prepare bulk insert
         predictions_bulk = []
         recommendations_bulk = []
         sensor_data_bulk = []
@@ -168,6 +191,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             if anomaly:
                 anomaly_tags_bulk.append((ts, building_id, anomaly))
 
+        # Bulk inserts
         cur.executemany("""
             INSERT INTO predictions (timestamp, building_id, predicted_energy)
             VALUES (%s, %s, %s)
