@@ -19,6 +19,18 @@ def sanitize_iso_timestamp(ts: str) -> str:
         return ts.replace('Z', '+00:00')
     return ts
 
+def try_parse_response(text):
+    """Handle various malformed or double-encoded JSON formats robustly."""
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, str):  # if it's double encoded
+            parsed = json.loads(parsed)
+            logger.warning("Double-encoded JSON detected and decoded.")
+        return parsed
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parsing failed: {e}")
+        return None
+
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logger.info("Function TriggerPrediction started")
 
@@ -43,13 +55,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             base_datetime = datetime.utcnow() - timedelta(hours=num_timesteps)
             target_values = [50.5 + (np.sin(i / 24 * np.pi) * 10) + (np.random.rand() * 5) for i in range(num_timesteps)]
             dynamic_features_data = [
-                [20.0 + (np.sin(i / 24 * np.pi) * 5) for i in range(num_timesteps)],  # temperature
-                [60.0 + (np.cos(i / 48 * np.pi) * 10) for i in range(num_timesteps)],  # humidity
-                [1 if (i % 24 > 7 and i % 24 < 20) else 0 for i in range(num_timesteps)],  # occupancy
-                [max(0, 100 * np.sin(i / 24 * np.pi) - 50) for i in range(num_timesteps)],  # energy
-                [5.0 + (np.random.rand() * 3) for i in range(num_timesteps)],  # current
-                [230.0 + (np.sin(i / 12 * np.pi) * 1) for i in range(num_timesteps)],  # voltage
-                [0.5 + (np.random.rand() * 0.5) for i in range(num_timesteps)]  # power_factor
+                [20.0 + (np.sin(i / 24 * np.pi) * 5) for i in range(num_timesteps)],
+                [60.0 + (np.cos(i / 48 * np.pi) * 10) for i in range(num_timesteps)],
+                [1 if (i % 24 > 7 and i % 24 < 20) else 0 for i in range(num_timesteps)],
+                [max(0, 100 * np.sin(i / 24 * np.pi) - 50) for i in range(num_timesteps)],
+                [5.0 + (np.random.rand() * 3) for i in range(num_timesteps)],
+                [230.0 + (np.sin(i / 12 * np.pi) * 1) for i in range(num_timesteps)],
+                [0.5 + (np.random.rand() * 0.5) for i in range(num_timesteps)]
             ]
             input_data = {
                 "data": [{
@@ -77,22 +89,19 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         logger.info(f"Response text (first 500 chars): {response.text[:500]}")
         response.raise_for_status()
 
-        raw_response = response.text
-        try:
-            predictions = json.loads(raw_response)
-        except json.JSONDecodeError:
-            predictions = json.loads(json.loads(raw_response))  # handle double encoding
-            logger.warning("Double-encoded JSON detected and decoded.")
-
-        logger.info(f"Parsed keys: {list(predictions.keys()) if isinstance(predictions, dict) else 'Not a dict'}")
+        predictions = try_parse_response(response.text)
+        if predictions is None:
+            return func.HttpResponse("Invalid response format", status_code=500)
 
         if isinstance(predictions, dict):
             prediction_values = predictions.get("predictions", [])
             recommendations_values = predictions.get("recommendations", [])
         elif isinstance(predictions, list):
+            logger.warning("Wrapping list response in dict under 'predictions'")
             prediction_values = predictions
             recommendations_values = []
         else:
+            logger.error("Unsupported response format")
             return func.HttpResponse("Invalid response format", status_code=500)
 
         if not prediction_values:
@@ -133,7 +142,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             );
         """)
 
-        # Add PKs if safe
         def safe_add_pk(cur, table_name, pk_name):
             cur.execute(f"""
                 SELECT timestamp, building_id
@@ -165,7 +173,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         target = input_data["data"][0]["target"]
         timestamps = [start + timedelta(hours=i) for i in range(len(target))]
 
-        # Prepare bulk insert
         predictions_bulk = []
         recommendations_bulk = []
         sensor_data_bulk = []
@@ -191,7 +198,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             if anomaly:
                 anomaly_tags_bulk.append((ts, building_id, anomaly))
 
-        # Bulk inserts
         cur.executemany("""
             INSERT INTO predictions (timestamp, building_id, predicted_energy)
             VALUES (%s, %s, %s)
