@@ -1,16 +1,15 @@
-import azure.functions as func
-import requests
-import json
-import os
-import psycopg2
-import numpy as np
-from datetime import datetime, timedelta
 import logging
+import azure.functions as func
+import os
+import json
+import requests
+import psycopg2
+from datetime import datetime, timedelta
+import numpy as np
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("azure")
+logger.setLevel(logging.INFO)
 
-# --- [imports remain unchanged] ---
 
 def sanitize_iso_timestamp(ts: str) -> str:
     if ts.endswith('+00:00Z'):
@@ -20,6 +19,7 @@ def sanitize_iso_timestamp(ts: str) -> str:
     elif ts.endswith('Z'):
         return ts.replace('Z', '+00:00')
     return ts
+
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logger.info("Function TriggerPrediction started")
@@ -80,22 +80,24 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         response.raise_for_status()
 
         raw_response = response.text
+        predictions = None
+
         try:
             predictions = json.loads(raw_response)
+            if isinstance(predictions, str):
+                predictions = json.loads(predictions)
+                logger.warning("Double-encoded JSON detected and decoded.")
         except json.JSONDecodeError:
-            predictions = json.loads(json.loads(raw_response))
-            logger.warning("Double-encoded JSON detected and decoded.")
+            logger.error("Failed to decode JSON response", exc_info=True)
+            return func.HttpResponse("Invalid response format", status_code=500)
 
         logger.info(f"Parsed keys: {list(predictions.keys()) if isinstance(predictions, dict) else 'Not a dict'}")
 
-        if isinstance(predictions, dict):
-            prediction_values = predictions.get("predictions", [])
-            recommendations_values = predictions.get("recommendations", [])
-        elif isinstance(predictions, list):
-            prediction_values = predictions
-            recommendations_values = []
-        else:
+        if not isinstance(predictions, dict):
             return func.HttpResponse("Invalid response format", status_code=500)
+
+        prediction_values = predictions.get("predictions", [])
+        recommendations_values = predictions.get("recommendations", [])
 
         if not prediction_values:
             return func.HttpResponse("No predictions returned", status_code=500)
@@ -156,7 +158,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             except Exception as e:
                 logger.error(f"Error adding primary key to {table_name}: {e}", exc_info=True)
 
-        # ✅ Fix added here
         safe_add_pk(cur, "predictions", "predictions_pk")
         safe_add_pk(cur, "recommendations", "recommendations_pk")
         safe_add_pk(cur, "sensor_data", "sensor_data_pk")
