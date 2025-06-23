@@ -119,7 +119,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 timestamp TIMESTAMP NOT NULL,
                 building_id INT NOT NULL,
                 predicted_energy DOUBLE PRECISION,
-                recommendations JSONB
+                recommendation JSONB
             );
         """)
         cur.execute("""
@@ -201,11 +201,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         """, predictions_bulk)
 
         cur.executemany("""
-            INSERT INTO recommendations (timestamp, building_id, predicted_energy, recommendations)
+            INSERT INTO recommendations (timestamp, building_id, predicted_energy, recommendation)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (timestamp, building_id) DO UPDATE
               SET predicted_energy = EXCLUDED.predicted_energy,
-                  recommendations = EXCLUDED.recommendations
+                  recommendation = EXCLUDED.recommendation
         """, recommendations_bulk)
 
         cur.executemany("""
