@@ -12,8 +12,8 @@ on:
 
 env:
   PYTHON_VERSION: '3.10'
-  FUNCTION_APP_NAME: 'emos-functions-v2'          # Your Azure Function App name
-  AZURE_RESOURCE_GROUP: 'voiceofthegame1-rg'    # Your Azure resource group
+  FUNCTION_APP_NAME: 'emos-function'          # Your Azure Function App name
+  AZURE_RESOURCE_GROUP: 'emos-rg'    # Your Azure resource group
 
 jobs:
   build:
