@@ -80,6 +80,7 @@ jobs:
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --name ${{ env.FUNCTION_APP_NAME }} \
             --src ./deploy.zip
+            --force
 
       - name: Azure Logout
         run: az logout
