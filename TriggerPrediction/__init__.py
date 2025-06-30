@@ -42,6 +42,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             num_timesteps = 745
             base_datetime = datetime.utcnow() - timedelta(hours=num_timesteps)
             target_values = [50.5 + (np.sin(i / 24 * np.pi) * 10) + (np.random.rand() * 5) for i in range(num_timesteps)]
+            # Create flat list of dictionaries for AML endpoint
+            input_data = {
+                "data": [
+                    {
+                        "datetime": (base_datetime + timedelta(hours=i)).isoformat(timespec='seconds') + 'Z',
+                        "target": target_values[i]
+                    } for i in range(num_timesteps)
+                ]
+            }
+            # Preserve original data for database storage
             dynamic_features_data = [
                 [20.0 + (np.sin(i / 24 * np.pi) * 5) for i in range(num_timesteps)],
                 [60.0 + (np.cos(i / 48 * np.pi) * 10) for i in range(num_timesteps)],
@@ -51,9 +61,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 [230.0 + (np.sin(i / 12 * np.pi) * 1) for i in range(num_timesteps)],
                 [0.5 + (np.random.rand() * 0.5) for i in range(num_timesteps)]
             ]
-            input_data = {
+            original_data = {
                 "data": [{
-                    "datetime": base_datetime.isoformat(timespec='seconds') + 'Z',  # Changed from 'start' to 'datetime'
+                    "datetime": base_datetime.isoformat(timespec='seconds') + 'Z',
                     "target": target_values,
                     "feat_dynamic_real": dynamic_features_data,
                     "feat_static_cat": [0],
@@ -71,7 +81,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "Authorization": f"Bearer {api_key}"
         }
 
-        logger.info("Sending request to inference endpoint...")
+        logger.info(f"Sending request to inference endpoint with data: {json.dumps(input_data, indent=2)}")
         response = requests.post(endpoint_url, headers=headers, data=json.dumps(input_data))
         logger.info(f"Response status: {response.status_code}")
         logger.info(f"Response text (first 500 chars): {response.text[:500]}")
@@ -94,7 +104,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         if not isinstance(predictions, dict):
             return func.HttpResponse("Invalid response format", status_code=500)
 
-        prediction_values = predictions.get("forecast", [])  # Changed from 'predictions' to 'forecast' to match score_v2.py
+        prediction_values = predictions.get("forecast", [])
         recommendations_values = predictions.get("recommendations", [])
 
         if not prediction_values:
@@ -160,10 +170,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         safe_add_pk(cur, "recommendations", "recommendations_pk")
         safe_add_pk(cur, "sensor_data", "sensor_data_pk")
 
-        building_id = input_data["data"][0].get("feat_static_cat", [0])[0]
-        start = datetime.fromisoformat(sanitize_iso_timestamp(input_data["data"][0]["datetime"]))  # Changed from 'start' to 'datetime'
-        dynamic_data = input_data["data"][0]["feat_dynamic_real"]
-        target = input_data["data"][0]["target"]
+        building_id = original_data["data"][0].get("feat_static_cat", [0])[0]
+        start = datetime.fromisoformat(sanitize_iso_timestamp(original_data["data"][0]["datetime"]))
+        dynamic_data = original_data["data"][0]["feat_dynamic_real"]
+        target = original_data["data"][0]["target"]
         timestamps = [start + timedelta(hours=i) for i in range(len(target))]
 
         predictions_bulk = []
@@ -172,7 +182,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         anomaly_tags_bulk = []
 
         for i, ts in enumerate(timestamps):
-            pred = prediction_values[0][i] if i < len(prediction_values[0]) else None  # Adjusted to handle list directly
+            pred = prediction_values[0][i] if i < len(prediction_values[0]) else None
             rec = recommendations_values[i] if i < len(recommendations_values) else {}
 
             predictions_bulk.append((ts, building_id, pred))
