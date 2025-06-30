@@ -79,7 +79,7 @@ jobs:
           az functionapp deployment source config-zip \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --name ${{ env.FUNCTION_APP_NAME }} \
-            --src ./deploy.zip
+            --src ./deploy.zip \
             --force
 
       - name: Azure Logout
