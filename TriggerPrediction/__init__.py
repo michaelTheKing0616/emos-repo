@@ -10,7 +10,6 @@ import numpy as np
 logger = logging.getLogger("azure")
 logger.setLevel(logging.INFO)
 
-
 def sanitize_iso_timestamp(ts: str) -> str:
     if ts.endswith('+00:00Z'):
         return ts.replace('+00:00Z', '+00:00')
@@ -19,7 +18,6 @@ def sanitize_iso_timestamp(ts: str) -> str:
     elif ts.endswith('Z'):
         return ts.replace('Z', '+00:00')
     return ts
-
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logger.info("Function TriggerPrediction started")
@@ -55,7 +53,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             ]
             input_data = {
                 "data": [{
-                    "start": base_datetime.isoformat(timespec='seconds') + 'Z',
+                    "datetime": base_datetime.isoformat(timespec='seconds') + 'Z',  # Changed from 'start' to 'datetime'
                     "target": target_values,
                     "feat_dynamic_real": dynamic_features_data,
                     "feat_static_cat": [0],
@@ -96,7 +94,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         if not isinstance(predictions, dict):
             return func.HttpResponse("Invalid response format", status_code=500)
 
-        prediction_values = predictions.get("predictions", [])
+        prediction_values = predictions.get("forecast", [])  # Changed from 'predictions' to 'forecast' to match score_v2.py
         recommendations_values = predictions.get("recommendations", [])
 
         if not prediction_values:
@@ -163,7 +161,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         safe_add_pk(cur, "sensor_data", "sensor_data_pk")
 
         building_id = input_data["data"][0].get("feat_static_cat", [0])[0]
-        start = datetime.fromisoformat(sanitize_iso_timestamp(input_data["data"][0]["start"]))
+        start = datetime.fromisoformat(sanitize_iso_timestamp(input_data["data"][0]["datetime"]))  # Changed from 'start' to 'datetime'
         dynamic_data = input_data["data"][0]["feat_dynamic_real"]
         target = input_data["data"][0]["target"]
         timestamps = [start + timedelta(hours=i) for i in range(len(target))]
@@ -174,7 +172,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         anomaly_tags_bulk = []
 
         for i, ts in enumerate(timestamps):
-            pred = prediction_values[0]["mean"][i] if i < len(prediction_values[0]["mean"]) else None
+            pred = prediction_values[0][i] if i < len(prediction_values[0]) else None  # Adjusted to handle list directly
             rec = recommendations_values[i] if i < len(recommendations_values) else {}
 
             predictions_bulk.append((ts, building_id, pred))
