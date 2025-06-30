@@ -74,13 +74,19 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Restart Function App
+        run: |
+          az functionapp restart \
+            --name ${{ env.FUNCTION_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }}
+
+
       - name: Deploy to Azure Function App
         run: |
           az functionapp deployment source config-zip \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --name ${{ env.FUNCTION_APP_NAME }} \
-            --src ./deploy.zip \
-            --force
+            --src ./deploy.zip 
 
       - name: Azure Logout
         run: az logout
