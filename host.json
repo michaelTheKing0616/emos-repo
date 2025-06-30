@@ -3,7 +3,19 @@
   "logging": {
     "applicationInsights": {
       "samplingSettings": {
-        "isEnabled": true
+        "isEnabled": true,
+        "excludedTypes": "Request"
+      }
+    },
+    "logLevel": {
+      "default": "Information"
+    }
+  },
+  "extensions": {
+    "durableTask": {
+      "hubName": "EMOSDurableFunctionsHub",
+      "storageProvider": {
+        "connectionStringName": "AzureWebJobsStorage"
       }
     }
   },
