@@ -36,30 +36,20 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             req_body = None
 
         if req_body and "data" in req_body:
-            input_data = req_body
+            original_data = req_body
         else:
             logger.info("Generating default test data")
-            num_timesteps = 745
+            num_timesteps = 5  # Reduced for testing
             base_datetime = datetime.utcnow() - timedelta(hours=num_timesteps)
-            target_values = [50.5 + (np.sin(i / 24 * np.pi) * 10) + (np.random.rand() * 5) for i in range(num_timesteps)]
-            # Create flat list of dictionaries for AML endpoint
-            input_data = {
-                "data": [
-                    {
-                        "datetime": (base_datetime + timedelta(hours=i)).isoformat(timespec='seconds') + 'Z',
-                        "target": target_values[i]
-                    } for i in range(num_timesteps)
-                ]
-            }
-            # Preserve original data for database storage
+            target_values = [50.5, 51.0, 51.5, 52.0, 52.5]
             dynamic_features_data = [
-                [20.0 + (np.sin(i / 24 * np.pi) * 5) for i in range(num_timesteps)],
-                [60.0 + (np.cos(i / 48 * np.pi) * 10) for i in range(num_timesteps)],
-                [1 if (i % 24 > 7 and i % 24 < 20) else 0 for i in range(num_timesteps)],
-                [max(0, 100 * np.sin(i / 24 * np.pi) - 50) for i in range(num_timesteps)],
-                [5.0 + (np.random.rand() * 3) for i in range(num_timesteps)],
-                [230.0 + (np.sin(i / 12 * np.pi) * 1) for i in range(num_timesteps)],
-                [0.5 + (np.random.rand() * 0.5) for i in range(num_timesteps)]
+                [20.0, 20.5, 21.0, 21.5, 22.0],  # Temperature
+                [60.0, 60.5, 61.0, 61.5, 62.0],  # Humidity
+                [1, 1, 0, 0, 1],                  # Occupancy
+                [50.0, 51.0, 51.5, 52.0, 52.5],  # Energy
+                [5.0, 5.1, 5.2, 5.3, 5.4],       # Current
+                [230.0, 230.5, 231.0, 231.5, 232.0],  # Voltage
+                [0.5, 0.55, 0.6, 0.65, 0.7]      # Power factor
             ]
             original_data = {
                 "data": [{
@@ -70,6 +60,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     "feat_static_real": [1000.0]
                 }]
             }
+
+        # Prepare AML payload
+        input_data = {
+            "data": original_data["data"]  # Send original structure to AML
+        }
 
     except Exception as e:
         logger.error(f"Input error: {str(e)}", exc_info=True)
