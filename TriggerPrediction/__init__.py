@@ -4,9 +4,9 @@ import os
 import json
 import requests
 import psycopg2
+from psycopg2 import extras
+from urllib.parse import urlparse, unquote
 from datetime import datetime, timedelta
-import numpy as np
-from urllib.parse import urlparse, quote
 
 logger = logging.getLogger("azure")
 logger.setLevel(logging.INFO)
@@ -20,6 +20,17 @@ def sanitize_iso_timestamp(ts: str) -> str:
         return ts.replace('Z', '+00:00')
     return ts
 
+def parse_database_url(db_url):
+    parsed = urlparse(db_url)
+    return {
+        "dbname": parsed.path.lstrip("/"),
+        "user": parsed.username,
+        "password": unquote(parsed.password),
+        "host": parsed.hostname,
+        "port": parsed.port,
+        "sslmode": "require"
+    }
+
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logger.info("Function TriggerPrediction started")
 
@@ -31,88 +42,60 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse("Missing environment variables", status_code=500)
 
     try:
-        try:
-            req_body = req.get_json()
-        except ValueError:
-            req_body = None
+        req_body = req.get_json()
+    except ValueError:
+        req_body = None
 
+    try:
         if req_body and "data" in req_body:
             original_data = req_body
         else:
             logger.info("Generating default test data")
-            num_timesteps = 5  # Reduced for testing
+            num_timesteps = 5
             base_datetime = datetime.utcnow() - timedelta(hours=num_timesteps)
-            target_values = [50.5, 51.0, 51.5, 52.0, 52.5]
-            dynamic_features_data = [
-                [20.0, 20.5, 21.0, 21.5, 22.0],
-                [60.0, 60.5, 61.0, 61.5, 62.0],
-                [1, 1, 0, 0, 1],
-                [50.0, 51.0, 51.5, 52.0, 52.5],
-                [5.0, 5.1, 5.2, 5.3, 5.4],
-                [230.0, 230.5, 231.0, 231.5, 232.0],
-                [0.5, 0.55, 0.6, 0.65, 0.7]
-            ]
             original_data = {
                 "data": [{
                     "datetime": base_datetime.isoformat(timespec='seconds') + 'Z',
-                    "target": target_values,
-                    "feat_dynamic_real": dynamic_features_data,
+                    "target": [50 + i * 0.5 for i in range(num_timesteps)],
+                    "feat_dynamic_real": [
+                        [20 + i * 0.5 for i in range(num_timesteps)],
+                        [60 + i * 0.5 for i in range(num_timesteps)],
+                        [1, 1, 0, 0, 1],
+                        [50 + i for i in range(num_timesteps)],
+                        [5 + i * 0.1 for i in range(num_timesteps)],
+                        [230 + i * 0.5 for i in range(num_timesteps)],
+                        [0.5 + i * 0.05 for i in range(num_timesteps)]
+                    ],
                     "feat_static_cat": [0],
-                    "feat_static_real": [1000.0]
+                    "feat_static_real": [1000.0],
+                    "item_id": "meter_001"
                 }]
             }
 
-        input_data = { "data": original_data["data"] }
+        logger.info(f"Sending request to inference endpoint with data: {json.dumps(original_data, indent=2)}")
 
-    except Exception as e:
-        logger.error(f"Input error: {str(e)}", exc_info=True)
-        return func.HttpResponse("Invalid input", status_code=400)
-
-    try:
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}"
         }
 
-        logger.info(f"Sending request to inference endpoint with data: {json.dumps(input_data, indent=2)}")
-        response = requests.post(endpoint_url, headers=headers, data=json.dumps(input_data))
+        response = requests.post(endpoint_url, headers=headers, data=json.dumps(original_data))
         logger.info(f"Response status: {response.status_code}")
         logger.info(f"Response text (first 500 chars): {response.text[:500]}")
         response.raise_for_status()
 
-        raw_response = response.text
-        predictions = None
+        predictions = json.loads(response.text)
+        if isinstance(predictions, str):
+            predictions = json.loads(predictions)
 
-        try:
-            predictions = json.loads(raw_response)
-            if isinstance(predictions, str):
-                predictions = json.loads(predictions)
-                logger.warning("Double-encoded JSON detected and decoded.")
-        except json.JSONDecodeError:
-            logger.error("Failed to decode JSON response", exc_info=True)
-            return func.HttpResponse("Invalid response format", status_code=500)
+        forecast = predictions.get("forecast", [])
+        recommendations = predictions.get("recommendations", [])
+        anomalies = predictions.get("anomalies", [])
 
-        logger.info(f"Parsed keys: {list(predictions.keys()) if isinstance(predictions, dict) else 'Not a dict'}")
+        if not forecast:
+            return func.HttpResponse("No forecast returned", status_code=500)
 
-        if not isinstance(predictions, dict):
-            return func.HttpResponse("Invalid response format", status_code=500)
-
-        prediction_values = predictions.get("forecast", [])
-        recommendations_values = predictions.get("recommendations", [])
-
-        if not prediction_values:
-            return func.HttpResponse("No predictions returned", status_code=500)
-
-        # Safely parse database URL
-        parsed = urlparse(db_url)
-        safe_password = quote(parsed.password) if parsed.password else ""
-        conn = psycopg2.connect(
-            dbname=parsed.path.lstrip("/"),
-            user=parsed.username,
-            password=safe_password,
-            host=parsed.hostname,
-            port=parsed.port
-        )
+        conn = psycopg2.connect(**parse_database_url(db_url))
         cur = conn.cursor()
 
         cur.execute("""
@@ -148,24 +131,20 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             );
         """)
 
-        building_id = original_data["data"][0].get("feat_static_cat", [0])[0]
-        start = datetime.fromisoformat(sanitize_iso_timestamp(original_data["data"][0]["datetime"]))
-        dynamic_data = original_data["data"][0]["feat_dynamic_real"]
-        target = original_data["data"][0]["target"]
+        record = original_data["data"][0]
+        building_id = record.get("feat_static_cat", [0])[0]
+        start = datetime.fromisoformat(sanitize_iso_timestamp(record["datetime"]))
+        dynamic_data = record["feat_dynamic_real"]
+        target = record["target"]
         timestamps = [start + timedelta(hours=i) for i in range(len(target))]
 
         predictions_bulk = []
         recommendations_bulk = []
         sensor_data_bulk = []
-        anomaly_tags_bulk = []
 
         for i, ts in enumerate(timestamps):
-            pred = prediction_values[0][i] if i < len(prediction_values[0]) else None
-            rec = recommendations_values[i] if i < len(recommendations_values) else {}
-
-            predictions_bulk.append((ts, building_id, pred))
-            recommendations_bulk.append((ts, building_id, pred, json.dumps(rec)))
-
+            pred = forecast[0][i] if isinstance(forecast[0], list) else forecast[i]
+            rec = recommendations[i] if i < len(recommendations) else {}
             temp, hum, occ, energy, current, voltage, pf = [f[i] for f in dynamic_data]
 
             anomaly = None
@@ -174,16 +153,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             elif not (0.4 <= pf <= 1.0):
                 anomaly = f"power_factor_abnormal:{pf}"
 
+            predictions_bulk.append((ts, building_id, pred, anomaly))
+            recommendations_bulk.append((ts, building_id, pred, json.dumps(rec)))
             sensor_data_bulk.append((ts, building_id, temp, hum, occ, energy, current, voltage, pf))
 
-            if anomaly:
-                anomaly_tags_bulk.append((ts, building_id, anomaly))
-
         cur.executemany("""
-            INSERT INTO predictions (timestamp, building_id, predicted_energy)
-            VALUES (%s, %s, %s)
+            INSERT INTO predictions (timestamp, building_id, predicted_energy, anomaly)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT (timestamp, building_id) DO UPDATE
-              SET predicted_energy = EXCLUDED.predicted_energy
+              SET predicted_energy = EXCLUDED.predicted_energy,
+                  anomaly = EXCLUDED.anomaly
         """, predictions_bulk)
 
         cur.executemany("""
@@ -207,15 +186,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                   power_factor = EXCLUDED.power_factor
         """, sensor_data_bulk)
 
-        if anomaly_tags_bulk:
-            args_str = ','.join(cur.mogrify("(%s, %s, %s)", x).decode('utf-8') for x in anomaly_tags_bulk)
-            cur.execute(f"""
-                INSERT INTO predictions (timestamp, building_id, anomaly)
-                VALUES {args_str}
-                ON CONFLICT (timestamp, building_id) DO UPDATE
-                  SET anomaly = EXCLUDED.anomaly
-            """)
-
         conn.commit()
         cur.close()
         conn.close()
@@ -230,7 +200,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             "stored_predictions": len(predictions_bulk),
             "stored_sensor_data": len(sensor_data_bulk),
             "stored_recommendations": len(recommendations_bulk),
-            "anomalies_detected": len(anomaly_tags_bulk)
+            "anomalies_detected": sum(1 for _, _, _, a in predictions_bulk if a)
         }),
         mimetype="application/json"
     )
