@@ -6,6 +6,7 @@ import requests
 import psycopg2
 from datetime import datetime, timedelta
 import numpy as np
+from urllib.parse import urlparse, quote
 
 logger = logging.getLogger("azure")
 logger.setLevel(logging.INFO)
@@ -43,13 +44,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             base_datetime = datetime.utcnow() - timedelta(hours=num_timesteps)
             target_values = [50.5, 51.0, 51.5, 52.0, 52.5]
             dynamic_features_data = [
-                [20.0, 20.5, 21.0, 21.5, 22.0],  # Temperature
-                [60.0, 60.5, 61.0, 61.5, 62.0],  # Humidity
-                [1, 1, 0, 0, 1],                  # Occupancy
-                [50.0, 51.0, 51.5, 52.0, 52.5],  # Energy
-                [5.0, 5.1, 5.2, 5.3, 5.4],       # Current
-                [230.0, 230.5, 231.0, 231.5, 232.0],  # Voltage
-                [0.5, 0.55, 0.6, 0.65, 0.7]      # Power factor
+                [20.0, 20.5, 21.0, 21.5, 22.0],
+                [60.0, 60.5, 61.0, 61.5, 62.0],
+                [1, 1, 0, 0, 1],
+                [50.0, 51.0, 51.5, 52.0, 52.5],
+                [5.0, 5.1, 5.2, 5.3, 5.4],
+                [230.0, 230.5, 231.0, 231.5, 232.0],
+                [0.5, 0.55, 0.6, 0.65, 0.7]
             ]
             original_data = {
                 "data": [{
@@ -61,10 +62,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 }]
             }
 
-        # Prepare AML payload
-        input_data = {
-            "data": original_data["data"]  # Send original structure to AML
-        }
+        input_data = { "data": original_data["data"] }
 
     except Exception as e:
         logger.error(f"Input error: {str(e)}", exc_info=True)
@@ -105,7 +103,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         if not prediction_values:
             return func.HttpResponse("No predictions returned", status_code=500)
 
-        conn = psycopg2.connect(db_url)
+        # Safely parse database URL
+        parsed = urlparse(db_url)
+        safe_password = quote(parsed.password) if parsed.password else ""
+        conn = psycopg2.connect(
+            dbname=parsed.path.lstrip("/"),
+            user=parsed.username,
+            password=safe_password,
+            host=parsed.hostname,
+            port=parsed.port
+        )
         cur = conn.cursor()
 
         cur.execute("""
@@ -122,7 +129,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 timestamp TIMESTAMP NOT NULL,
                 building_id INT NOT NULL,
                 predicted_energy DOUBLE PRECISION,
-                recommendation JSONB
+                recommendation JSONB,
+                PRIMARY KEY (timestamp, building_id)
             );
         """)
         cur.execute("""
@@ -135,35 +143,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 energy DOUBLE PRECISION,
                 current DOUBLE PRECISION,
                 voltage DOUBLE PRECISION,
-                power_factor DOUBLE PRECISION
+                power_factor DOUBLE PRECISION,
+                PRIMARY KEY (timestamp, building_id)
             );
         """)
-
-        def safe_add_pk(cur, table_name, pk_name):
-            cur.execute(f"""
-                SELECT timestamp, building_id
-                FROM public.{table_name}
-                GROUP BY timestamp, building_id
-                HAVING COUNT(*) > 1
-            """)
-            duplicates = cur.fetchall()
-            if duplicates:
-                logger.warning(f"Duplicate entries in {table_name}: {duplicates}")
-                return
-            try:
-                cur.execute(f"""
-                    ALTER TABLE public.{table_name}
-                    ADD CONSTRAINT {pk_name} PRIMARY KEY (timestamp, building_id)
-                """)
-                logger.info(f"Primary key added to {table_name}")
-            except psycopg2.errors.DuplicateObject:
-                logger.info(f"Primary key on {table_name} already exists.")
-            except Exception as e:
-                logger.error(f"Error adding primary key to {table_name}: {e}", exc_info=True)
-
-        safe_add_pk(cur, "predictions", "predictions_pk")
-        safe_add_pk(cur, "recommendations", "recommendations_pk")
-        safe_add_pk(cur, "sensor_data", "sensor_data_pk")
 
         building_id = original_data["data"][0].get("feat_static_cat", [0])[0]
         start = datetime.fromisoformat(sanitize_iso_timestamp(original_data["data"][0]["datetime"]))
