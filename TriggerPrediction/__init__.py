@@ -91,6 +91,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         forecast = predictions.get("forecast", [])
         recommendations = predictions.get("recommendations", [])
         anomalies = predictions.get("anomalies", [])
+        postgres_ready = predictions.get("postgres_ready", [])  # <-- New field
 
         if not forecast:
             return func.HttpResponse("No forecast returned", status_code=500)
@@ -144,7 +145,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         for i, ts in enumerate(timestamps):
             pred = forecast[0][i] if isinstance(forecast[0], list) else forecast[i]
-            rec = recommendations[i] if i < len(recommendations) else {}
             temp, hum, occ, energy, current, voltage, pf = [f[i] for f in dynamic_data]
 
             anomaly = None
@@ -154,8 +154,24 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 anomaly = f"power_factor_abnormal:{pf}"
 
             predictions_bulk.append((ts, building_id, pred, anomaly))
-            recommendations_bulk.append((ts, building_id, pred, json.dumps(rec)))
             sensor_data_bulk.append((ts, building_id, temp, hum, occ, energy, current, voltage, pf))
+
+        # Use postgres_ready if available
+        if postgres_ready:
+            recommendations_bulk = [
+                (
+                    datetime.fromisoformat(sanitize_iso_timestamp(rec["timestamp"])),
+                    int(rec["building_id"]),
+                    float(rec["predicted_energy"]),
+                    json.dumps(rec["recommendation"])
+                )
+                for rec in postgres_ready
+            ]
+        else:
+            for i, ts in enumerate(timestamps):
+                pred = forecast[0][i] if isinstance(forecast[0], list) else forecast[i]
+                rec = recommendations[i] if i < len(recommendations) else {}
+                recommendations_bulk.append((ts, building_id, pred, json.dumps(rec)))
 
         cur.executemany("""
             INSERT INTO predictions (timestamp, building_id, predicted_energy, anomaly)
