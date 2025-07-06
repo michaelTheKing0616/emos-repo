@@ -1,3 +1,4 @@
+# OptimizeEnergy/optimize_energy.py
 import psycopg2
 import json
 from datetime import datetime
@@ -8,7 +9,6 @@ def generate_recommendations_from_db(db_connection):
     Stores recommendations in the recommendations table.
     """
     try:
-        # Connect to the database
         conn = psycopg2.connect(db_connection)
         cur = conn.cursor()
 
@@ -23,7 +23,7 @@ def generate_recommendations_from_db(db_connection):
             );
         """)
 
-        # Fetch recent sensor data and predictions (last 24 hours)
+        # Fetch recent sensor and prediction data
         cur.execute("""
             SELECT 
                 s.timestamp, 
@@ -41,50 +41,67 @@ def generate_recommendations_from_db(db_connection):
             WHERE s.timestamp >= NOW() - INTERVAL '24 hours'
             ORDER BY s.timestamp, s.building_id;
         """)
-        data = cur.fetchall()
+        rows = cur.fetchall()
 
         recommendations = []
-        for row in data:
+
+        for row in rows:
             timestamp, building_id, energy, occupancy, power_factor, temperature, predicted_energy, anomaly = row
             recommendation = {}
 
-            # Generate recommendations based on data
             if anomaly and "power_factor_abnormal" in anomaly:
-                recommendation["description"] = "Optimize power factor: Consider adding power factor correction capacitors."
-                recommendation["priority"] = "high"
-            elif energy > predicted_energy * 1.2:  # If actual energy exceeds predicted by 20%
-                recommendation["description"] = "Reduce energy usage: Schedule high-energy equipment during off-peak hours."
-                recommendation["priority"] = "medium"
-            elif occupancy < 10 and energy > 50:  # Low occupancy but high energy
-                recommendation["description"] = "Reduce HVAC and lighting: Low occupancy detected."
-                recommendation["priority"] = "medium"
-            elif temperature > 26:  # High temperature
-                recommendation["description"] = "Adjust HVAC: Temperature exceeds 26°C, consider cooling optimization."
-                recommendation["priority"] = "low"
+                recommendation = {
+                    "description": "Optimize power factor: Consider adding power factor correction capacitors.",
+                    "priority": "high",
+                    "tag": "power_factor"
+                }
+            elif predicted_energy and energy > predicted_energy * 1.2:
+                recommendation = {
+                    "description": "Reduce energy usage: Schedule high-energy equipment during off-peak hours.",
+                    "priority": "medium",
+                    "tag": "energy_spike"
+                }
+            elif occupancy < 5 and energy > 30:
+                recommendation = {
+                    "description": "Reduce HVAC and lighting: Low occupancy detected with high usage.",
+                    "priority": "medium",
+                    "tag": "occupancy_mismatch"
+                }
+            elif temperature > 26:
+                recommendation = {
+                    "description": "Adjust HVAC: Temperature exceeds 26°C, consider cooling optimization.",
+                    "priority": "low",
+                    "tag": "temperature_control"
+                }
             else:
-                recommendation["description"] = "No action needed: Energy usage within expected range."
-                recommendation["priority"] = "low"
+                recommendation = {
+                    "description": "No immediate action required: Conditions within optimal range.",
+                    "priority": "low",
+                    "tag": "normal"
+                }
 
             recommendations.append((
                 timestamp,
                 building_id,
-                predicted_energy if predicted_energy else 0,
+                predicted_energy if predicted_energy else 0.0,
                 json.dumps(recommendation)
             ))
 
-        # Insert recommendations into the table
+        # Insert or update recommendations
         if recommendations:
             cur.executemany("""
                 INSERT INTO recommendations (timestamp, building_id, predicted_energy, recommendation)
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (timestamp, building_id) DO UPDATE
-                SET predicted_energy = EXCLUDED.predicted_energy,
-                    recommendation = EXCLUDED.recommendation
+                  SET predicted_energy = EXCLUDED.predicted_energy,
+                      recommendation = EXCLUDED.recommendation
             """, recommendations)
 
         conn.commit()
         cur.close()
         conn.close()
+
         return len(recommendations)
+
     except Exception as e:
         raise Exception(f"Error generating recommendations: {str(e)}")
