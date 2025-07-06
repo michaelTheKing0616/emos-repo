@@ -5,6 +5,10 @@ from azure.storage.blob import BlobServiceClient
 from fetch_firebase_data import initialize_firebase, process_snapshot
 import psycopg2
 from datetime import datetime
+from urllib.parse import urlparse, unquote
+
+logger = logging.getLogger("azure")
+logger.setLevel(logging.INFO)
 
 def download_credentials():
     blob_service_client = BlobServiceClient.from_connection_string(os.environ['BLOB_CONNECTION_STRING'])
@@ -13,8 +17,19 @@ def download_credentials():
         f.write(blob_client.download_blob().readall())
     return "/tmp/firebase_credentials.json"
 
+def parse_database_url(db_url):
+    parsed = urlparse(db_url)
+    return {
+        "dbname": parsed.path.lstrip("/"),
+        "user": parsed.username,
+        "password": unquote(parsed.password),
+        "host": parsed.hostname,
+        "port": parsed.port,
+        "sslmode": "require"
+    }
+
 def store_sensor_data(snapshot, db_url):
-    conn = psycopg2.connect(db_url)
+    conn = psycopg2.connect(**parse_database_url(db_url))
     cur = conn.cursor()
 
     # Ensure the sensor_data table exists
@@ -37,49 +52,56 @@ def store_sensor_data(snapshot, db_url):
     for building_id, readings in snapshot.items():
         for ts_str, values in readings.items():
             try:
-                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                rows.append((
+                ts_clean = ts_str.replace("Z", "+00:00")
+                ts = datetime.fromisoformat(ts_clean)
+
+                row = (
                     ts,
                     int(building_id),
-                    float(values.get("temperature", 0)),
-                    float(values.get("humidity", 0)),
+                    float(values.get("temperature", 0.0)),
+                    float(values.get("humidity", 0.0)),
                     int(values.get("occupancy", 0)),
-                    float(values.get("energy", 0)),
-                    float(values.get("current", 0)),
-                    float(values.get("voltage", 0)),
-                    float(values.get("power_factor", 1)),
-                ))
+                    float(values.get("energy", 0.0)),
+                    float(values.get("current", 0.0)),
+                    float(values.get("voltage", 0.0)),
+                    float(values.get("power_factor", 1.0))
+                )
+                rows.append(row)
             except Exception as e:
-                logging.warning(f"Invalid data row: {e}")
+                logger.warning(f"Invalid row skipped for building {building_id} @ {ts_str}: {e}")
 
-    cur.executemany("""
-        INSERT INTO sensor_data (
-            timestamp, building_id, temperature, humidity, occupancy,
-            energy, current, voltage, power_factor
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (timestamp, building_id) DO UPDATE
-        SET temperature = EXCLUDED.temperature,
-            humidity = EXCLUDED.humidity,
-            occupancy = EXCLUDED.occupancy,
-            energy = EXCLUDED.energy,
-            current = EXCLUDED.current,
-            voltage = EXCLUDED.voltage,
-            power_factor = EXCLUDED.power_factor
-    """, rows)
+    if rows:
+        cur.executemany("""
+            INSERT INTO sensor_data (
+                timestamp, building_id, temperature, humidity, occupancy,
+                energy, current, voltage, power_factor
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (timestamp, building_id) DO UPDATE
+            SET temperature = EXCLUDED.temperature,
+                humidity = EXCLUDED.humidity,
+                occupancy = EXCLUDED.occupancy,
+                energy = EXCLUDED.energy,
+                current = EXCLUDED.current,
+                voltage = EXCLUDED.voltage,
+                power_factor = EXCLUDED.power_factor
+        """, rows)
 
     conn.commit()
     cur.close()
     conn.close()
+    logger.info(f"Stored {len(rows)} rows of sensor data")
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info('Processing Firebase data')
+    logger.info('Starting FetchFirebase function...')
     try:
         cred_path = download_credentials()
-        db_url = os.environ['TIMESCALEDB_CONNECTION']
+        db_url = os.environ['DATABASE_URL'] or os.environ['TIMESCALEDB_CONNECTION']
         ref = initialize_firebase(cred_path)
         snapshot = ref.get()
+        if not snapshot:
+            return func.HttpResponse("No sensor data found in Firebase", status_code=404)
         store_sensor_data(snapshot, db_url)
-        return func.HttpResponse("Firebase data stored to TimescaleDB", status_code=200)
+        return func.HttpResponse("Firebase sensor data stored successfully", status_code=200)
     except Exception as e:
-        logging.error(f"Error: {e}", exc_info=True)
+        logger.error(f"Error in FetchFirebase function: {e}", exc_info=True)
         return func.HttpResponse(f"Error: {e}", status_code=500)
