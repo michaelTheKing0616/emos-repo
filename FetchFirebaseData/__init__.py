@@ -3,10 +3,13 @@ import os
 import logging
 import json
 from azure.storage.blob import BlobServiceClient
-from fetch_firebase_data import initialize_firebase, process_snapshot
 import psycopg2
 from urllib.parse import urlparse, unquote
 from datetime import datetime
+
+# Firebase Admin SDK
+import firebase_admin
+from firebase_admin import credentials, db
 
 def download_credentials():
     try:
@@ -24,6 +27,29 @@ def download_credentials():
         return download_path
     except Exception as e:
         logging.error(f"Failed to download Firebase credentials: {e}", exc_info=True)
+        raise
+
+def initialize_firebase(credential_path: str):
+    """
+    Initializes Firebase Admin SDK with the provided service account credentials.
+    """
+    try:
+        logging.info("Initializing Firebase Admin SDK...")
+
+        # Avoid reinitialization
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(credential_path)
+            firebase_admin.initialize_app(cred, {
+                "databaseURL": os.environ.get("FIREBASE_DB_URL")  # Must be set in Azure Function App Settings
+            })
+            logging.info("Firebase Admin SDK initialized.")
+        else:
+            logging.info("Firebase Admin SDK already initialized.")
+
+        return db.reference('/sensor_data')  # Adjust path if your Firebase structure differs
+
+    except Exception as e:
+        logging.error(f"Firebase initialization error: {e}", exc_info=True)
         raise
 
 def parse_database_url(db_url):
@@ -108,12 +134,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("FetchFirebaseData function triggered.")
 
     try:
+        # Download credentials from Blob
         cred_path = download_credentials()
 
+        # Get DB connection string from environment
         db_url = os.environ['TIMESCALEDB_CONNECTION']
         if not db_url:
             raise ValueError("Missing TIMESCALEDB_CONNECTION in environment variables")
 
+        # Initialize Firebase and fetch sensor snapshot
         ref = initialize_firebase(cred_path)
         logging.info("Firebase connection established.")
 
