@@ -12,7 +12,7 @@ logger.setLevel(logging.INFO)
 
 def download_credentials():
     blob_service_client = BlobServiceClient.from_connection_string(os.environ['BLOB_CONNECTION_STRING'])
-    blob_client = blob_service_client.get_blob_client(container="credentials", blob="firebase_credentials.json")
+    blob_client = blob_service_client.get_blob_client(container="credentials", blob="firebase_creds.json")
     with open("/tmp/firebase_credentials.json", "wb") as f:
         f.write(blob_client.download_blob().readall())
     return "/tmp/firebase_credentials.json"
