@@ -58,13 +58,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     "datetime": base_datetime.isoformat(timespec='seconds') + 'Z',
                     "target": [50 + i * 0.5 for i in range(num_timesteps)],
                     "feat_dynamic_real": [
-                        [20 + i * 0.5 for i in range(num_timesteps)],
-                        [60 + i * 0.5 for i in range(num_timesteps)],
-                        [1, 1, 0, 0, 1],
-                        [50 + i for i in range(num_timesteps)],
-                        [5 + i * 0.1 for i in range(num_timesteps)],
-                        [230 + i * 0.5 for i in range(num_timesteps)],
-                        [0.5 + i * 0.05 for i in range(num_timesteps)]
+                        [20 + i * 0.5 for i in range(num_timesteps)],  # temperature
+                        [60 + i * 0.5 for i in range(num_timesteps)],  # humidity
+                        [1, 1, 0, 0, 1],                              # occupancy
+                        [50 + i for i in range(num_timesteps)],       # energy
+                        [5 + i * 0.1 for i in range(num_timesteps)],   # current
+                        [230 + i * 0.5 for i in range(num_timesteps)], # voltage
+                        [0.5 + i * 0.05 for i in range(num_timesteps)] # power factor
                     ],
                     "feat_static_cat": [0],
                     "feat_static_real": [1000.0],
@@ -91,7 +91,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         forecast = predictions.get("forecast", [])
         recommendations = predictions.get("recommendations", [])
         anomalies = predictions.get("anomalies", [])
-        postgres_ready = predictions.get("postgres_ready", [])  # <-- New field
+        postgres_ready = predictions.get("postgres_ready", [])  # <-- Structured recommendations
 
         if not forecast:
             return func.HttpResponse("No forecast returned", status_code=500)
