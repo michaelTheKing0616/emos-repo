@@ -5,6 +5,7 @@ import json
 from azure.storage.blob import BlobServiceClient
 from fetch_firebase_data import initialize_firebase, process_snapshot
 import psycopg2
+from urllib.parse import urlparse, unquote
 from datetime import datetime
 
 def download_credentials():
@@ -25,9 +26,20 @@ def download_credentials():
         logging.error(f"Failed to download Firebase credentials: {e}", exc_info=True)
         raise
 
+def parse_database_url(db_url):
+    parsed = urlparse(db_url)
+    return {
+        "dbname": parsed.path.lstrip("/"),
+        "user": parsed.username,
+        "password": unquote(parsed.password),
+        "host": parsed.hostname,
+        "port": parsed.port,
+        "sslmode": "require"
+    }
+
 def store_sensor_data(snapshot, db_url):
     try:
-        conn = psycopg2.connect(db_url)
+        conn = psycopg2.connect(**parse_database_url(db_url))
         cur = conn.cursor()
 
         # Ensure sensor_data table exists
