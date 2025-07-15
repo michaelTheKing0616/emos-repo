@@ -18,7 +18,7 @@ async def main(mytimer: func.TimerRequest, starter: str):
             logging.info(f"Instance '{instance_id}' is already running. Skipping trigger.")
             return
 
-        instance_id = await client.start_new("orchestrator_function", instance_id)
+        instance_id = await client.start_new("orchestrator_function", None)
         logging.info(f"Started orchestration with ID = '{instance_id}'")
     except Exception as e:
         logging.error(f"Failed to start orchestration: {str(e)}", exc_info=True)
