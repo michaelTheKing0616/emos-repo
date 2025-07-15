@@ -3,20 +3,24 @@ import azure.durable_functions as df
 import logging
 
 def orchestrator_function(context: df.DurableOrchestrationContext):
-    logging.info("Starting orchestrator_function")
+    log = context.create_replay_safe_logger(logging.getLogger("durable.orchestrator"))
+    log.info("🚀 Starting orchestrator_function")
 
     try:
-        # Step 1: Fetch sensor data from Firebase and store in TimescaleDB
-        result1 = yield context.call_activity("FetchFirebaseData", None)
-        logging.info(f"FetchFirebaseData completed: {result1}")
+        # Step 1: Call FetchFirebaseData
+        log.info("🔁 Step 1: CallFetchFirebaseData")
+        result1 = yield context.call_activity("CallFetchFirebaseData", None)
+        log.info(f"✅ CallFetchFirebaseData completed: {result1}")
 
-        # Step 2: Run prediction using updated model and save results to TimescaleDB
-        result2 = yield context.call_activity("TriggerPrediction", result1)
-        logging.info(f"TriggerPrediction completed: {result2}")
+        # Step 2: Call TriggerPrediction using result1
+        log.info("🔁 Step 2: CallTriggerPrediction")
+        result2 = yield context.call_activity("CallTriggerPrediction", result1)
+        log.info(f"✅ CallTriggerPrediction completed: {result2}")
 
-        # Step 3: Generate post-prediction optimization recommendations
-        result3 = yield context.call_activity("OptimizeEnergy", result2)
-        logging.info(f"OptimizeEnergy completed: {result3}")
+        # Step 3: Call OptimizeEnergy using result2
+        log.info("🔁 Step 3: CallOptimizeEnergy")
+        result3 = yield context.call_activity("CallOptimizeEnergy", result2)
+        log.info(f"✅ CallOptimizeEnergy completed: {result3}")
 
         return {
             "fetch_firebase_result": result1,
@@ -25,7 +29,7 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
         }
 
     except Exception as e:
-        logging.error(f"Orchestration failed: {e}", exc_info=True)
+        log.error(f"❌ Orchestration failed: {e}", exc_info=True)
         return {
             "error": str(e)
         }
