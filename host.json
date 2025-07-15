@@ -8,14 +8,21 @@
       }
     },
     "logLevel": {
-      "default": "Information"
+      "default": "Information",
+      "Host.Results": "Information",
+      "Function": "Information"
     }
   },
   "extensions": {
     "durableTask": {
       "hubName": "EMOSDurableFunctionsHub",
       "storageProvider": {
+        "type": "AzureStorage",
         "connectionStringName": "AzureWebJobsStorage"
+      },
+      "tracing": {
+        "traceInputsAndOutputs": true,
+        "traceReplayEvents": false
       }
     }
   },
