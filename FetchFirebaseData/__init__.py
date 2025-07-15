@@ -30,23 +30,19 @@ def download_credentials():
         raise
 
 def initialize_firebase(credential_path: str):
-    """
-    Initializes Firebase Admin SDK with the provided service account credentials.
-    """
     try:
         logging.info("Initializing Firebase Admin SDK...")
 
-        # Avoid reinitialization
         if not firebase_admin._apps:
             cred = credentials.Certificate(credential_path)
             firebase_admin.initialize_app(cred, {
-                "databaseURL": os.environ.get("FIREBASE_DB_URL")  # Must be set in Azure Function App Settings
+                "databaseURL": os.environ.get("FIREBASE_DB_URL")
             })
             logging.info("Firebase Admin SDK initialized.")
         else:
             logging.info("Firebase Admin SDK already initialized.")
 
-        return db.reference('/sensor_data')  # Adjust path if your Firebase structure differs
+        return db.reference('/sensor_data')
 
     except Exception as e:
         logging.error(f"Firebase initialization error: {e}", exc_info=True)
@@ -85,7 +81,19 @@ def store_sensor_data(snapshot, db_url):
         """)
 
         rows = []
-        for building_id, readings in snapshot.items():
+
+        # Accept both list- and dict-based Firebase formats
+        if isinstance(snapshot, dict):
+            iterable = snapshot.items()
+        elif isinstance(snapshot, list):
+            iterable = enumerate(snapshot)
+        else:
+            logging.warning("Unsupported Firebase snapshot type.")
+            return
+
+        for building_id, readings in iterable:
+            if not isinstance(readings, dict):
+                continue
             for ts_str, values in readings.items():
                 try:
                     ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
@@ -101,7 +109,7 @@ def store_sensor_data(snapshot, db_url):
                         float(values.get("power_factor", 1))
                     ))
                 except Exception as e:
-                    logging.warning(f"Invalid sensor row (building_id={building_id}, timestamp={ts_str}): {e}")
+                    logging.warning(f"Invalid row (building_id={building_id}, timestamp={ts_str}): {e}")
 
         if rows:
             cur.executemany("""
@@ -134,15 +142,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("FetchFirebaseData function triggered.")
 
     try:
-        # Download credentials from Blob
         cred_path = download_credentials()
-
-        # Get DB connection string from environment
         db_url = os.environ['TIMESCALEDB_CONNECTION']
         if not db_url:
             raise ValueError("Missing TIMESCALEDB_CONNECTION in environment variables")
 
-        # Initialize Firebase and fetch sensor snapshot
         ref = initialize_firebase(cred_path)
         logging.info("Firebase connection established.")
 
