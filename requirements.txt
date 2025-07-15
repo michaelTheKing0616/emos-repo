@@ -8,3 +8,5 @@ mxnet==1.9.1
 joblib==1.3.2
 python-dateutil==2.9.0
 azure-functions-durable==1.2.2
+firebase-admin==6.2.0
+azure-storage-blob==12.19.1
