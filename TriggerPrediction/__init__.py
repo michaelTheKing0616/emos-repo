@@ -53,11 +53,17 @@ def parse_database_url(db_url):
         "sslmode": "require"
     }
 
-def get_feature(data, key, index):
-    try:
-        return data.get(key, DEFAULT_VALUES[key])
-    except:
-        return DEFAULT_VALUES[key]
+def build_dynamic_series(flattened_input, num_timesteps):
+    dynamic_series = {}
+    for key in DYNAMIC_FEATURE_KEYS:
+        if key in flattened_input and isinstance(flattened_input[key], list):
+            values = flattened_input[key][:num_timesteps]
+            # Fill remaining with default if length is short
+            values += [DEFAULT_VALUES[key]] * (num_timesteps - len(values))
+            dynamic_series[key] = values
+        else:
+            dynamic_series[key] = [DEFAULT_VALUES[key]] * num_timesteps
+    return dynamic_series
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logger.info("Function TriggerPrediction started")
@@ -77,6 +83,25 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         if req_body and "data" in req_body:
             original_data = req_body
+
+        elif req_body and any(k in req_body for k in DYNAMIC_FEATURE_KEYS):
+            # Handle flattened Firebase-style dynamic feature input
+            logger.info("Using flattened Firebase input format")
+            num_timesteps = max(len(v) for v in req_body.values() if isinstance(v, list))
+            base_datetime = datetime.utcnow() - timedelta(hours=num_timesteps)
+            dynamic_series = build_dynamic_series(req_body, num_timesteps)
+
+            original_data = {
+                "data": [{
+                    "datetime": base_datetime.isoformat(timespec='seconds') + 'Z',
+                    "target": [50 + i * 0.5 for i in range(num_timesteps)],
+                    "feat_dynamic_real": [dynamic_series[key] for key in DYNAMIC_FEATURE_KEYS],
+                    "feat_static_cat": [0],
+                    "feat_static_real": [1000.0],
+                    "item_id": "meter_001"
+                }]
+            }
+
         else:
             logger.info("Generating default test data")
             num_timesteps = 5
