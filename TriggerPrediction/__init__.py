@@ -1,3 +1,4 @@
+# TriggerPrediction/__init__.py
 import logging
 import azure.functions as func
 import os
@@ -30,6 +31,12 @@ def parse_database_url(db_url):
         "port": parsed.port,
         "sslmode": "require"
     }
+
+def safe_get(feature_list, i, default=None):
+    try:
+        return feature_list[i]
+    except (IndexError, TypeError):
+        return default
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logger.info("Function TriggerPrediction started")
@@ -64,7 +71,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                         [50 + i for i in range(num_timesteps)],       # energy
                         [5 + i * 0.1 for i in range(num_timesteps)],   # current
                         [230 + i * 0.5 for i in range(num_timesteps)], # voltage
-                        [0.5 + i * 0.05 for i in range(num_timesteps)] # power factor
+                        [0.5 + i * 0.05 for i in range(num_timesteps)],# power factor
+                        [100 + i for i in range(num_timesteps)]        # power
                     ],
                     "feat_static_cat": [0],
                     "feat_static_real": [1000.0],
@@ -91,7 +99,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         forecast = predictions.get("forecast", [])
         recommendations = predictions.get("recommendations", [])
         anomalies = predictions.get("anomalies", [])
-        postgres_ready = predictions.get("postgres_ready", [])  # <-- Structured recommendations
+        postgres_ready = predictions.get("postgres_ready", [])
 
         if not forecast:
             return func.HttpResponse("No forecast returned", status_code=500)
@@ -99,6 +107,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         conn = psycopg2.connect(**parse_database_url(db_url))
         cur = conn.cursor()
 
+        # Create tables if they don't exist
         cur.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 timestamp TIMESTAMP NOT NULL,
@@ -128,6 +137,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 current DOUBLE PRECISION,
                 voltage DOUBLE PRECISION,
                 power_factor DOUBLE PRECISION,
+                power DOUBLE PRECISION,
                 PRIMARY KEY (timestamp, building_id)
             );
         """)
@@ -135,8 +145,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         record = original_data["data"][0]
         building_id = record.get("feat_static_cat", [0])[0]
         start = datetime.fromisoformat(sanitize_iso_timestamp(record["datetime"]))
-        dynamic_data = record["feat_dynamic_real"]
-        target = record["target"]
+        dynamic_data = record.get("feat_dynamic_real", [])
+        target = record.get("target", [])
         timestamps = [start + timedelta(hours=i) for i in range(len(target))]
 
         predictions_bulk = []
@@ -145,18 +155,24 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         for i, ts in enumerate(timestamps):
             pred = forecast[0][i] if isinstance(forecast[0], list) else forecast[i]
-            temp, hum, occ, energy, current, voltage, pf = [f[i] for f in dynamic_data]
+            temp = safe_get(dynamic_data, 0, [None]*len(timestamps))[i]
+            hum = safe_get(dynamic_data, 1, [None]*len(timestamps))[i]
+            occ = safe_get(dynamic_data, 2, [None]*len(timestamps))[i]
+            energy = safe_get(dynamic_data, 3, [None]*len(timestamps))[i]
+            current = safe_get(dynamic_data, 4, [None]*len(timestamps))[i]
+            voltage = safe_get(dynamic_data, 5, [None]*len(timestamps))[i]
+            pf = safe_get(dynamic_data, 6, [None]*len(timestamps))[i]
+            power = safe_get(dynamic_data, 7, [None]*len(timestamps))[i]
 
             anomaly = None
-            if not (10 <= temp <= 40):
+            if temp is not None and not (10 <= temp <= 40):
                 anomaly = f"temperature_out_of_range:{temp}"
-            elif not (0.4 <= pf <= 1.0):
+            elif pf is not None and not (0.4 <= pf <= 1.0):
                 anomaly = f"power_factor_abnormal:{pf}"
 
             predictions_bulk.append((ts, building_id, pred, anomaly))
-            sensor_data_bulk.append((ts, building_id, temp, hum, occ, energy, current, voltage, pf))
+            sensor_data_bulk.append((ts, building_id, temp, hum, occ, energy, current, voltage, pf, power))
 
-        # Use postgres_ready if available
         if postgres_ready:
             recommendations_bulk = [
                 (
@@ -190,8 +206,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         """, recommendations_bulk)
 
         cur.executemany("""
-            INSERT INTO sensor_data (timestamp, building_id, temperature, humidity, occupancy, energy, current, voltage, power_factor)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO sensor_data (
+                timestamp, building_id, temperature, humidity, occupancy,
+                energy, current, voltage, power_factor, power
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (timestamp, building_id) DO UPDATE
               SET temperature = EXCLUDED.temperature,
                   humidity = EXCLUDED.humidity,
@@ -199,7 +218,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                   energy = EXCLUDED.energy,
                   current = EXCLUDED.current,
                   voltage = EXCLUDED.voltage,
-                  power_factor = EXCLUDED.power_factor
+                  power_factor = EXCLUDED.power_factor,
+                  power = EXCLUDED.power
         """, sensor_data_bulk)
 
         conn.commit()
