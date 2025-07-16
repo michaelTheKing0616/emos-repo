@@ -76,11 +76,22 @@ def store_sensor_data(snapshot, db_url):
                 current DOUBLE PRECISION,
                 voltage DOUBLE PRECISION,
                 power_factor DOUBLE PRECISION,
+                power DOUBLE PRECISION,
                 PRIMARY KEY (timestamp, building_id)
             );
         """)
 
         rows = []
+        flattened = {
+            "temperature": [],
+            "humidity": [],
+            "occupancy": [],
+            "energy": [],
+            "current": [],
+            "voltage": [],
+            "power_factor": [],
+            "power": []
+        }
 
         # Accept both list- and dict-based Firebase formats
         if isinstance(snapshot, dict):
@@ -89,7 +100,7 @@ def store_sensor_data(snapshot, db_url):
             iterable = enumerate(snapshot)
         else:
             logging.warning("Unsupported Firebase snapshot type.")
-            return
+            return flattened
 
         for building_id, readings in iterable:
             if not isinstance(readings, dict):
@@ -97,17 +108,27 @@ def store_sensor_data(snapshot, db_url):
             for ts_str, values in readings.items():
                 try:
                     ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                    rows.append((
-                        ts,
-                        int(building_id),
-                        float(values.get("temperature", 0)),
-                        float(values.get("humidity", 0)),
-                        int(values.get("occupancy", 0)),
-                        float(values.get("energy", 0)),
-                        float(values.get("current", 0)),
-                        float(values.get("voltage", 0)),
-                        float(values.get("power_factor", 1))
-                    ))
+                    temp = float(values.get("temperature", 0))
+                    hum = float(values.get("humidity", 0))
+                    occ = int(values.get("occupancy", 0))
+                    energy = float(values.get("energy", 0))
+                    current = float(values.get("current", 0))
+                    voltage = float(values.get("voltage", 0))
+                    pf = float(values.get("power_factor", 1))
+                    power = float(values.get("power", 0))
+
+                    rows.append((ts, int(building_id), temp, hum, occ, energy, current, voltage, pf, power))
+
+                    # Populate flattened
+                    flattened["temperature"].append(temp)
+                    flattened["humidity"].append(hum)
+                    flattened["occupancy"].append(occ)
+                    flattened["energy"].append(energy)
+                    flattened["current"].append(current)
+                    flattened["voltage"].append(voltage)
+                    flattened["power_factor"].append(pf)
+                    flattened["power"].append(power)
+
                 except Exception as e:
                     logging.warning(f"Invalid row (building_id={building_id}, timestamp={ts_str}): {e}")
 
@@ -115,8 +136,8 @@ def store_sensor_data(snapshot, db_url):
             cur.executemany("""
                 INSERT INTO sensor_data (
                     timestamp, building_id, temperature, humidity, occupancy,
-                    energy, current, voltage, power_factor
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    energy, current, voltage, power_factor, power
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (timestamp, building_id) DO UPDATE
                 SET temperature = EXCLUDED.temperature,
                     humidity = EXCLUDED.humidity,
@@ -124,7 +145,8 @@ def store_sensor_data(snapshot, db_url):
                     energy = EXCLUDED.energy,
                     current = EXCLUDED.current,
                     voltage = EXCLUDED.voltage,
-                    power_factor = EXCLUDED.power_factor
+                    power_factor = EXCLUDED.power_factor,
+                    power = EXCLUDED.power
             """, rows)
             logging.info(f"{len(rows)} sensor rows inserted/updated.")
         else:
@@ -133,6 +155,8 @@ def store_sensor_data(snapshot, db_url):
         conn.commit()
         cur.close()
         conn.close()
+
+        return flattened
 
     except Exception as e:
         logging.error(f"Database error: {e}", exc_info=True)
@@ -156,9 +180,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse("No sensor data found in Firebase.", status_code=204)
 
         logging.info("Sensor data snapshot fetched.")
-        store_sensor_data(snapshot, db_url)
+        flattened = store_sensor_data(snapshot, db_url)
 
-        return func.HttpResponse("Firebase sensor data stored successfully.", status_code=200)
+        return func.HttpResponse(
+            json.dumps(flattened),
+            status_code=200,
+            mimetype="application/json"
+        )
 
     except Exception as e:
         logging.error(f"FetchFirebaseData failed: {e}", exc_info=True)
