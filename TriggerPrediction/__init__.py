@@ -1,4 +1,3 @@
-# TriggerPrediction/__init__.py
 import logging
 import azure.functions as func
 import os
@@ -11,6 +10,28 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger("azure")
 logger.setLevel(logging.INFO)
+
+DEFAULT_VALUES = {
+    "temperature": 25.0,
+    "humidity": 50.0,
+    "occupancy": 0,
+    "energy": 0.0,
+    "current": 5.0,
+    "voltage": 220.0,
+    "power_factor": 0.95,
+    "power": 0.0
+}
+
+DYNAMIC_FEATURE_KEYS = [
+    "temperature",
+    "humidity",
+    "occupancy",
+    "energy",
+    "current",
+    "voltage",
+    "power_factor",
+    "power"
+]
 
 def sanitize_iso_timestamp(ts: str) -> str:
     if ts.endswith('+00:00Z'):
@@ -32,11 +53,11 @@ def parse_database_url(db_url):
         "sslmode": "require"
     }
 
-def safe_get(feature_list, i, default=None):
+def get_feature(data, key, index):
     try:
-        return feature_list[i]
-    except (IndexError, TypeError):
-        return default
+        return data.get(key, DEFAULT_VALUES[key])
+    except:
+        return DEFAULT_VALUES[key]
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logger.info("Function TriggerPrediction started")
@@ -60,20 +81,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             logger.info("Generating default test data")
             num_timesteps = 5
             base_datetime = datetime.utcnow() - timedelta(hours=num_timesteps)
+            dynamic_series = {
+                key: [DEFAULT_VALUES[key] for _ in range(num_timesteps)]
+                for key in DYNAMIC_FEATURE_KEYS
+            }
+
             original_data = {
                 "data": [{
                     "datetime": base_datetime.isoformat(timespec='seconds') + 'Z',
                     "target": [50 + i * 0.5 for i in range(num_timesteps)],
-                    "feat_dynamic_real": [
-                        [20 + i * 0.5 for i in range(num_timesteps)],  # temperature
-                        [60 + i * 0.5 for i in range(num_timesteps)],  # humidity
-                        [1, 1, 0, 0, 1],                              # occupancy
-                        [50 + i for i in range(num_timesteps)],       # energy
-                        [5 + i * 0.1 for i in range(num_timesteps)],   # current
-                        [230 + i * 0.5 for i in range(num_timesteps)], # voltage
-                        [0.5 + i * 0.05 for i in range(num_timesteps)],# power factor
-                        [100 + i for i in range(num_timesteps)]        # power
-                    ],
+                    "feat_dynamic_real": [dynamic_series[key] for key in DYNAMIC_FEATURE_KEYS],
                     "feat_static_cat": [0],
                     "feat_static_real": [1000.0],
                     "item_id": "meter_001"
@@ -107,7 +124,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         conn = psycopg2.connect(**parse_database_url(db_url))
         cur = conn.cursor()
 
-        # Create tables if they don't exist
+        # Ensure tables exist
         cur.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 timestamp TIMESTAMP NOT NULL,
@@ -145,8 +162,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         record = original_data["data"][0]
         building_id = record.get("feat_static_cat", [0])[0]
         start = datetime.fromisoformat(sanitize_iso_timestamp(record["datetime"]))
-        dynamic_data = record.get("feat_dynamic_real", [])
-        target = record.get("target", [])
+        dynamic_data = record["feat_dynamic_real"]
+        target = record["target"]
         timestamps = [start + timedelta(hours=i) for i in range(len(target))]
 
         predictions_bulk = []
@@ -155,24 +172,25 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
         for i, ts in enumerate(timestamps):
             pred = forecast[0][i] if isinstance(forecast[0], list) else forecast[i]
-            temp = safe_get(dynamic_data, 0, [None]*len(timestamps))[i]
-            hum = safe_get(dynamic_data, 1, [None]*len(timestamps))[i]
-            occ = safe_get(dynamic_data, 2, [None]*len(timestamps))[i]
-            energy = safe_get(dynamic_data, 3, [None]*len(timestamps))[i]
-            current = safe_get(dynamic_data, 4, [None]*len(timestamps))[i]
-            voltage = safe_get(dynamic_data, 5, [None]*len(timestamps))[i]
-            pf = safe_get(dynamic_data, 6, [None]*len(timestamps))[i]
-            power = safe_get(dynamic_data, 7, [None]*len(timestamps))[i]
+
+            try:
+                temp, hum, occ, energy, current, voltage, pf, power = [f[i] for f in dynamic_data]
+            except Exception:
+                logger.warning(f"Incomplete feature set at timestep {i}; filling with defaults")
+                features = [f[i] if i < len(f) else DEFAULT_VALUES[key]
+                            for f, key in zip(dynamic_data, DYNAMIC_FEATURE_KEYS)]
+                temp, hum, occ, energy, current, voltage, pf, power = features
 
             anomaly = None
-            if temp is not None and not (10 <= temp <= 40):
+            if not (10 <= temp <= 40):
                 anomaly = f"temperature_out_of_range:{temp}"
-            elif pf is not None and not (0.4 <= pf <= 1.0):
+            elif not (0.4 <= pf <= 1.0):
                 anomaly = f"power_factor_abnormal:{pf}"
 
             predictions_bulk.append((ts, building_id, pred, anomaly))
-            sensor_data_bulk.append((ts, building_id, temp, hum, occ, energy, current, voltage, pf, power))
+            sensor_data_bulk.append((ts, building_id, temp, hum, int(occ), energy, current, voltage, pf, power))
 
+        # Use structured recommendations
         if postgres_ready:
             recommendations_bulk = [
                 (
@@ -189,6 +207,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 rec = recommendations[i] if i < len(recommendations) else {}
                 recommendations_bulk.append((ts, building_id, pred, json.dumps(rec)))
 
+        # Insert data
         cur.executemany("""
             INSERT INTO predictions (timestamp, building_id, predicted_energy, anomaly)
             VALUES (%s, %s, %s, %s)
@@ -206,10 +225,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         """, recommendations_bulk)
 
         cur.executemany("""
-            INSERT INTO sensor_data (
-                timestamp, building_id, temperature, humidity, occupancy,
-                energy, current, voltage, power_factor, power
-            )
+            INSERT INTO sensor_data (timestamp, building_id, temperature, humidity, occupancy, energy, current, voltage, power_factor, power)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (timestamp, building_id) DO UPDATE
               SET temperature = EXCLUDED.temperature,
