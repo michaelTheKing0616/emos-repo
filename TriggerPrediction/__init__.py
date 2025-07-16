@@ -56,13 +56,10 @@ def parse_database_url(db_url):
 def build_dynamic_series(flattened_input, num_timesteps):
     dynamic_series = {}
     for key in DYNAMIC_FEATURE_KEYS:
-        if key in flattened_input and isinstance(flattened_input[key], list):
-            values = flattened_input[key][:num_timesteps]
-            # Fill remaining with default if length is short
-            values += [DEFAULT_VALUES[key]] * (num_timesteps - len(values))
-            dynamic_series[key] = values
-        else:
-            dynamic_series[key] = [DEFAULT_VALUES[key]] * num_timesteps
+        raw_values = flattened_input.get(key, [])
+        values = raw_values if isinstance(raw_values, list) else []
+        values = values[:num_timesteps] + [DEFAULT_VALUES[key]] * (num_timesteps - len(values))
+        dynamic_series[key] = values
     return dynamic_series
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
@@ -85,9 +82,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             original_data = req_body
 
         elif req_body and any(k in req_body for k in DYNAMIC_FEATURE_KEYS):
-            # Handle flattened Firebase-style dynamic feature input
             logger.info("Using flattened Firebase input format")
-            num_timesteps = max(len(v) for v in req_body.values() if isinstance(v, list))
+            num_timesteps = max(len(v) for k, v in req_body.items() if k in DYNAMIC_FEATURE_KEYS and isinstance(v, list))
             base_datetime = datetime.utcnow() - timedelta(hours=num_timesteps)
             dynamic_series = build_dynamic_series(req_body, num_timesteps)
 
@@ -149,7 +145,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         conn = psycopg2.connect(**parse_database_url(db_url))
         cur = conn.cursor()
 
-        # Ensure tables exist
         cur.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 timestamp TIMESTAMP NOT NULL,
@@ -215,7 +210,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             predictions_bulk.append((ts, building_id, pred, anomaly))
             sensor_data_bulk.append((ts, building_id, temp, hum, int(occ), energy, current, voltage, pf, power))
 
-        # Use structured recommendations
         if postgres_ready:
             recommendations_bulk = [
                 (
@@ -232,7 +226,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 rec = recommendations[i] if i < len(recommendations) else {}
                 recommendations_bulk.append((ts, building_id, pred, json.dumps(rec)))
 
-        # Insert data
         cur.executemany("""
             INSERT INTO predictions (timestamp, building_id, predicted_energy, anomaly)
             VALUES (%s, %s, %s, %s)
