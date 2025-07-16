@@ -1,26 +1,22 @@
 # orchestrator_function/__init__.py
 import azure.durable_functions as df
-import logging
 
 def orchestrator_function(context: df.DurableOrchestrationContext):
-    log = context.create_replay_safe_logger(logging.getLogger("durable.orchestrator"))
-    log.info("🚀 Starting orchestrator_function")
+    log = context.create_replay_safe_logger()
+    log.info("🚀 Orchestrator started")
 
     try:
-        # Step 1: Call FetchFirebaseData
-        log.info("🔁 Step 1: CallFetchFirebaseData")
+        log.info("🔹 Step 1: Calling CallFetchFirebaseData")
         result1 = yield context.call_activity("CallFetchFirebaseData", None)
-        log.info(f"✅ CallFetchFirebaseData completed: {result1}")
+        log.info(f"✅ Step 1 completed: {result1}")
 
-        # Step 2: Call TriggerPrediction using result1
-        log.info("🔁 Step 2: CallTriggerPrediction")
+        log.info("🔹 Step 2: Calling CallTriggerPrediction")
         result2 = yield context.call_activity("CallTriggerPrediction", result1)
-        log.info(f"✅ CallTriggerPrediction completed: {result2}")
+        log.info(f"✅ Step 2 completed: {result2}")
 
-        # Step 3: Call OptimizeEnergy using result2
-        log.info("🔁 Step 3: CallOptimizeEnergy")
+        log.info("🔹 Step 3: Calling CallOptimizeEnergy")
         result3 = yield context.call_activity("CallOptimizeEnergy", result2)
-        log.info(f"✅ CallOptimizeEnergy completed: {result3}")
+        log.info(f"✅ Step 3 completed: {result3}")
 
         return {
             "fetch_firebase_result": result1,
@@ -30,8 +26,6 @@ def orchestrator_function(context: df.DurableOrchestrationContext):
 
     except Exception as e:
         log.error(f"❌ Orchestration failed: {e}", exc_info=True)
-        return {
-            "error": str(e)
-        }
+        return { "error": str(e) }
 
 main = df.Orchestrator.create(orchestrator_function)
