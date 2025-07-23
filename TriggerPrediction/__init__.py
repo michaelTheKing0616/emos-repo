@@ -264,32 +264,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         logger.error(f"Processing error: {e}", exc_info=True)
         return func.HttpResponse(f"Error: {str(e)}", status_code=500)
 
-    try:
-        # Return clean recommendations only
-        clean_recommendations = []
-        if postgres_ready:
-            clean_recommendations = [rec["recommendation"] for rec in postgres_ready]
-        else:
-            for i in range(len(recommendations)):
-                rec = recommendations[i]
-                if isinstance(rec, dict):
-                    clean_recommendations.append(rec)
-                else:
-                    clean_recommendations.append({})
-
-        return func.HttpResponse(
-            json.dumps({
-                "status": "success",
-                "stored_predictions": len(predictions_bulk),
-                "stored_sensor_data": len(sensor_data_bulk),
-                "stored_recommendations": len(recommendations_bulk),
-                "anomalies_detected": sum(1 for _, _, _, a in predictions_bulk if a),
-                "recommendations": clean_recommendations
-            }),
-            mimetype="application/json"
-        )
-
-    except Exception as e:
-        logger.error(f"Return formatting error: {e}", exc_info=True)
-        return func.HttpResponse(f"Final formatting error: {str(e)}", status_code=500)
-
+    return func.HttpResponse(
+        json.dumps({
+            "status": "success",
+            "stored_predictions": len(predictions_bulk),
+            "stored_sensor_data": len(sensor_data_bulk),
+            "stored_recommendations": len(recommendations_bulk),
+            "anomalies_detected": sum(1 for _, _, _, a in predictions_bulk if a)
+        }),
+        mimetype="application/json"
+    )
