@@ -292,3 +292,4 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         logger.error(f"Return formatting error: {e}", exc_info=True)
         return func.HttpResponse(f"Final formatting error: {str(e)}", status_code=500)
+
